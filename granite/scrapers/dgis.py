@@ -68,11 +68,9 @@ class DgisScraper(BaseScraper):
                     if link_elem:
                         href = link_elem.get_attribute("href")
                         if href:
-                            source_url = (
-                                f"https://2gis.ru{href}"
-                                if href.startswith("/")
-                                else href
-                            )
+                            from urllib.parse import urljoin
+
+                            source_url = urljoin("https://2gis.ru", href)
 
                     # 2GIS часто показывает VK/Telegram прямо в карточке
                     card_messengers: dict = {}

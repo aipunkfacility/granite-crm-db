@@ -4,6 +4,7 @@
 Вынесено из PipelineManager — полностью независимая фаза
 кластеризации и слияния дубликатов.
 """
+
 from granite.database import Database, RawCompanyRow, CompanyRow
 from loguru import logger
 from granite.pipeline.status import print_status
@@ -37,19 +38,21 @@ class DedupPhase:
             # Перевод в dict для алгоритмов
             dicts = []
             for r in raw_records:
-                dicts.append({
-                    "id": r.id,
-                    "source": r.source,
-                    "source_url": r.source_url or "",
-                    "name": r.name,
-                    "phones": r.phones or [],
-                    "address_raw": r.address_raw or "",
-                    "website": r.website,
-                    "emails": r.emails or [],
-                    "geo": r.geo,
-                    "messengers": r.messengers or {},
-                    "city": r.city,
-                })
+                dicts.append(
+                    {
+                        "id": r.id,
+                        "source": r.source,
+                        "source_url": r.source_url or "",
+                        "name": r.name,
+                        "phones": r.phones or [],
+                        "address_raw": r.address_raw or "",
+                        "website": r.website,
+                        "emails": r.emails or [],
+                        "geo": r.geo,
+                        "messengers": r.messengers or {},
+                        "city": r.city,
+                    }
+                )
 
             # Валидация перед кластеризацией
             for d in dicts:
@@ -68,9 +71,11 @@ class DedupPhase:
             )
 
             # Слияние и сохранение
+            # O(1) lookup via dict instead of O(N) list comprehension
+            dicts_by_id = {d["id"]: d for d in dicts}
             conflicts = []
             for i, cl in enumerate(superclusters):
-                cluster_dicts = [d for d in dicts if d["id"] in cl]
+                cluster_dicts = [dicts_by_id[cid] for cid in cl]
                 merged = merge_cluster(cluster_dicts)
 
                 row = CompanyRow(
@@ -85,11 +90,13 @@ class DedupPhase:
                 session.add(row)
 
                 if merged["needs_review"]:
-                    conflicts.append({
-                        "cluster_id": i + 1,
-                        "records": cluster_dicts,
-                        "reason": merged["review_reason"],
-                    })
+                    conflicts.append(
+                        {
+                            "cluster_id": i + 1,
+                            "records": cluster_dicts,
+                            "reason": merged["review_reason"],
+                        }
+                    )
 
             if conflicts:
                 logger.warning(f"Конфликты при слиянии: {len(conflicts)} компаний")

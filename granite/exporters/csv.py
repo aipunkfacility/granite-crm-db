@@ -125,8 +125,7 @@ class CsvExporter:
 
     def export_city(self, city: str):
         """Экспорт одного города."""
-        session = self.db.get_session()
-        try:
+        with self.db.session_scope() as session:
             records = session.query(EnrichedCompanyRow).filter_by(city=city).all()
             if not records:
                 logger.warning(f"Нет данных для экспорта {city}")
@@ -158,13 +157,10 @@ class CsvExporter:
                 for r in sorted(records, key=lambda x: x.crm_score, reverse=True):
                     writer.writerow(_build_csv_row(r.to_dict()))
             logger.info(f"Экспорт CSV завершен: {filepath}")
-        finally:
-            session.close()
 
     def export_city_with_preset(self, city: str, preset_name: str, preset: dict):
         """Экспорт города с фильтром из пресета config.yaml."""
-        session = self.db.get_session()
-        try:
+        with self.db.session_scope() as session:
             query = session.query(EnrichedCompanyRow).filter_by(city=city)
             query = _apply_preset_filter(query, preset_name, preset)
             records = query.all()
@@ -205,5 +201,3 @@ class CsvExporter:
             logger.info(
                 f"Экспорт CSV (пресет '{preset_name}'): {filepath} ({len(records)} записей)"
             )
-        finally:
-            session.close()

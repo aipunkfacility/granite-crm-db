@@ -77,8 +77,7 @@ class MarkdownExporter:
         self.output_dir = output_dir
 
     def export_city(self, city: str):
-        session = self.db.get_session()
-        try:
+        with self.db.session_scope() as session:
             records = session.query(EnrichedCompanyRow).filter_by(city=city).all()
             if not records:
                 return
@@ -97,13 +96,10 @@ class MarkdownExporter:
                     _write_segment_table(f, seg, segments[seg])
 
             logger.info(f"Экспорт Markdown завершен: {filepath}")
-        finally:
-            session.close()
 
     def export_city_with_preset(self, city: str, preset_name: str, preset: dict):
         """Экспорт города с фильтром из пресета config.yaml."""
-        session = self.db.get_session()
-        try:
+        with self.db.session_scope() as session:
             query = session.query(EnrichedCompanyRow).filter_by(city=city)
             query = _apply_preset_filter(query, preset_name, preset)
             records = query.all()
@@ -133,5 +129,3 @@ class MarkdownExporter:
             logger.info(
                 f"Экспорт Markdown (пресет '{preset_name}'): {filepath} ({len(records)} записей)"
             )
-        finally:
-            session.close()

@@ -15,8 +15,7 @@ class CheckpointManager:
         """Определить этап для города.
         Возможные стадии: 'start', 'scraped', 'deduped', 'enriched'
         """
-        session = self.db.get_session()
-        try:
+        with self.db.session_scope() as session:
             from granite.database import RawCompanyRow, CompanyRow
 
             enriched_count = (
@@ -34,16 +33,10 @@ class CheckpointManager:
                 return "scraped"
 
             return "start"
-        except Exception as e:
-            logger.error(f"Ошибка проверки чекпоинта: {e}")
-            return "start"
-        finally:
-            session.close()
 
     def clear_city(self, city: str):
         """Полная очистка всех данных по городу (при --force)."""
-        session = self.db.get_session()
-        try:
+        with self.db.session_scope() as session:
             from granite.database import RawCompanyRow, CompanyRow
 
             session.query(EnrichedCompanyRow).filter_by(city=city).delete()
@@ -51,8 +44,3 @@ class CheckpointManager:
             session.query(RawCompanyRow).filter_by(city=city).delete()
             session.commit()
             logger.info(f"Очищены все данные для города {city}")
-        except Exception as e:
-            session.rollback()
-            logger.error(f"Ошибка очистки БД: {e}")
-        finally:
-            session.close()

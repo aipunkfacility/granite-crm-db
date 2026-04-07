@@ -14,6 +14,9 @@ ALLOWED_HOSTS = frozenset(
         "::1",
     ]
 )
+
+# Email validation regex (precompiled for performance)
+_EMAIL_PATTERN = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 BLOCKED_IP_RANGES = [
     ipaddress.ip_network("10.0.0.0/8"),
     ipaddress.ip_network("172.16.0.0/12"),
@@ -109,8 +112,7 @@ def validate_email(email: str) -> bool:
     """Базовая валидация email по регулярке."""
     if not email:
         return False
-    pattern = re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$")
-    return bool(pattern.match(email.strip()))
+    return bool(_EMAIL_PATTERN.match(email.strip()))
 
 
 def validate_emails(emails: list[str]) -> list[str]:
