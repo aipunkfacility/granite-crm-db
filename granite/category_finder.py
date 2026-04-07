@@ -10,7 +10,9 @@ from loguru import logger
 
 CACHE_PATH = "data/category_cache.yaml"
 
-UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+DEFAULT_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+}
 JSPRAV_CATEGORY = "izgotovlenie-i-ustanovka-pamyatnikov-i-nadgrobij"
 
 # Thread-safe: session stored per-thread via threading.local()
@@ -21,7 +23,7 @@ def _get_jsprav_session() -> requests.Session:
     """Создать сессию с CSRF-токеном для jsprav.ru (thread-safe)."""
     if not hasattr(_jsprav_local, "session") or _jsprav_local.session is None:
         session = requests.Session()
-        session.headers.update(UA)
+        session.headers.update(DEFAULT_HEADERS)
 
         # Получаем главную — там CSRF-токен в JS и cookie
         r = session.get("https://jsprav.ru/", timeout=20)
@@ -91,7 +93,9 @@ def _extract_subdomain(url: str) -> str:
 
 def _check_head(url: str, timeout: int = 8) -> bool:
     try:
-        r = requests.head(url, timeout=timeout, headers=UA, allow_redirects=True)
+        r = requests.head(
+            url, timeout=timeout, headers=DEFAULT_HEADERS, allow_redirects=True
+        )
         return r.status_code == 200
     except Exception:
         return False

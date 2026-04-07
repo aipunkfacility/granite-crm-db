@@ -12,6 +12,8 @@ import time
 from loguru import logger
 from granite.utils import extract_emails
 
+MIN_MARKDOWN_LENGTH = 50
+
 
 class FirecrawlClient:
     """Обёртка над firecrawl CLI (search + scrape)."""
@@ -126,7 +128,7 @@ class FirecrawlClient:
 
             if not data:
                 # Если не JSON — это может быть чистый markdown
-                if len(stdout) > 50:
+                if len(stdout) > MIN_MARKDOWN_LENGTH:
                     markdown = stdout
                 else:
                     return None
