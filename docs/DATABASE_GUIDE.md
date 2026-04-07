@@ -1,4 +1,4 @@
-# Гайд по базе данных проекта
+﻿# Гайд по базе данных проекта
 
 ## 1. Общая архитектура
 
@@ -516,9 +516,10 @@ finally:
 Рекомендуется использовать `session_scope()` вместо ручного управления сессией:
 
 ```python
-from granite.database import RawCompanyRow, EnrichedCompanyRow, session_scope
+from granite.database import Database, RawCompanyRow, EnrichedCompanyRow
 
-with session_scope(db) as session:
+db = Database()
+with db.session_scope() as session:
     # Новая сырая запись
     raw = RawCompanyRow(
         source="firecrawl",
