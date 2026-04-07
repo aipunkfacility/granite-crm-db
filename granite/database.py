@@ -143,8 +143,6 @@ def run_alembic_upgrade(db_path: str, config_path: str = "config.yaml"):
         alembic_cfg.set_main_option("sqlalchemy.url", f"sqlite:///{db_path}")
 
         # Устанавливаем GRANITE_CONFIG для env.py
-        import os
-
         old_granite_config = os.environ.get("GRANITE_CONFIG")
         os.environ["GRANITE_CONFIG"] = config_path
 

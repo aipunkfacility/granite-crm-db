@@ -16,7 +16,13 @@ JSPRAV_CATEGORY = "izgotovlenie-i-ustanovka-pamyatnikov-i-nadgrobij"
 class JspravScraper(BaseScraper):
     """Скрепер jsprav.ru через JSON-LD — быстрый, не требует Playwright."""
 
-    def __init__(self, config: dict, city: str, categories: list[str] = None, subdomain: str = None):
+    def __init__(
+        self,
+        config: dict,
+        city: str,
+        categories: list[str] = None,
+        subdomain: str = None,
+    ):
         super().__init__(config, city)
         self.source_config = config.get("sources", {}).get("jsprav", {})
         self.subdomain_map = self.source_config.get("subdomain_map", {})
@@ -47,13 +53,14 @@ class JspravScraper(BaseScraper):
         loc_lower = locality.lower().strip()
         if loc_lower == self._city_lower:
             return True
-        if self._city_lower.startswith(loc_lower) or loc_lower.startswith(self._city_lower):
+        if self._city_lower.startswith(loc_lower) or loc_lower.startswith(
+            self._city_lower
+        ):
             return True
-        for variant in (loc_lower,):
-            if len(variant) > 4:
-                stem = variant.rstrip("аеоуияью")
-                if stem and stem == self._city_lower.rstrip("аеоуияью"):
-                    return True
+        if len(loc_lower) > 4:
+            stem = loc_lower.rstrip("аеоуияью")
+            if stem and stem == self._city_lower.rstrip("аеоуияью"):
+                return True
         return False
 
     def _parse_total_from_summary(self, soup) -> int | None:
@@ -71,7 +78,7 @@ class JspravScraper(BaseScraper):
     @staticmethod
     def _extract_page_num(url: str) -> int:
         """Извлекает номер страницы из URL."""
-        m = re.search(r'page-?(\d+)', url) or re.search(r'page=(\d+)', url)
+        m = re.search(r"page-?(\d+)", url) or re.search(r"page=(\d+)", url)
         return int(m.group(1)) if m else 1
 
     def _get_next_page_url(self, soup, base_dir: str, page_num: int) -> str | None:
@@ -87,8 +94,9 @@ class JspravScraper(BaseScraper):
 
         # Fallback: пробуем ?page=N (jsprav иногда не генерирует /page-N/ после 5-й)
         parsed = urlparse(base_dir)
-        fallback = urlunparse((parsed.scheme, parsed.netloc, parsed.path, "",
-                                   f"page={page_num + 1}", ""))
+        fallback = urlunparse(
+            (parsed.scheme, parsed.netloc, parsed.path, "", f"page={page_num + 1}", "")
+        )
         return fallback
 
     def _parse_companies_from_soup(self, soup, seen_urls: set) -> list[RawCompany]:
@@ -135,18 +143,20 @@ class JspravScraper(BaseScraper):
                         except (ValueError, TypeError):
                             pass
 
-                    companies.append(RawCompany(
-                        source=Source.JSPRAV,
-                        source_url="",
-                        name=name,
-                        phones=phones,
-                        address_raw=f"{addr.get('streetAddress', '')}, "
-                                    f"{addr.get('addressLocality', '')}".strip(", "),
-                        website=website,
-                        emails=[],
-                        city=self.city,
-                        geo=geo,
-                    ))
+                    companies.append(
+                        RawCompany(
+                            source=Source.JSPRAV,
+                            source_url="",
+                            name=name,
+                            phones=phones,
+                            address_raw=f"{addr.get('streetAddress', '')}, "
+                            f"{addr.get('addressLocality', '')}".strip(", "),
+                            website=website,
+                            emails=[],
+                            city=self.city,
+                            geo=geo,
+                        )
+                    )
             except (json.JSONDecodeError, KeyError, AttributeError):
                 continue
         return companies
@@ -154,7 +164,9 @@ class JspravScraper(BaseScraper):
     def scrape(self) -> list[RawCompany]:
         companies = []
         subdomain = self._get_subdomain()
-        ua = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        ua = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
 
         for category in self.categories:
             seen_urls = set()
@@ -175,23 +187,38 @@ class JspravScraper(BaseScraper):
                         r = requests.get(url, timeout=60, headers=ua)
                         break
                     except (requests.Timeout, requests.ConnectionError) as e:
-                        logger.warning(f"  JSprav: попытка {attempt+1}/3 не удалась: {e}")
+                        logger.warning(
+                            f"  JSprav: попытка {attempt + 1}/3 не удалась: {e}"
+                        )
                         time.sleep(3)
 
                 try:
                     if r is None:
-                        logger.error(f"  JSprav: не удалось загрузить {url} за 3 попытки")
+                        logger.error(
+                            f"  JSprav: не удалось загрузить {url} за 3 попытки"
+                        )
                         continue
 
                     if r.status_code == 404:
-                        logger.warning(f"  JSprav: 404 для /page-{page_num}/ — пробуем fallback ?page=")
+                        logger.warning(
+                            f"  JSprav: 404 для /page-{page_num}/ — пробуем fallback ?page="
+                        )
                         # Fallback: если /page-N/ = 404, пробуем ?page=N
-                        base_parsed = urlparse(f"https://{subdomain}.jsprav.ru/{category}/")
-                        fallback_url = urlunparse((base_parsed.scheme, base_parsed.netloc,
-                                                   base_parsed.path, "",
-                                                   f"page={page_num}", ""))
+                        base_parsed = urlparse(
+                            f"https://{subdomain}.jsprav.ru/{category}/"
+                        )
+                        fallback_url = urlunparse(
+                            (
+                                base_parsed.scheme,
+                                base_parsed.netloc,
+                                base_parsed.path,
+                                "",
+                                f"page={page_num}",
+                                "",
+                            )
+                        )
                         r_fb = requests.get(fallback_url, timeout=30, headers=ua)
-                        if r_fb.status_code == 200 and 'LocalBusiness' in r_fb.text:
+                        if r_fb.status_code == 200 and "LocalBusiness" in r_fb.text:
                             r = r_fb
                             url = fallback_url
                             logger.info(f"  JSprav: fallback ?page={page_num} успешен")
@@ -205,24 +232,32 @@ class JspravScraper(BaseScraper):
                     if declared_total is None:
                         declared_total = self._parse_total_from_summary(soup)
                         if declared_total is not None:
-                            logger.info(f"  JSprav: саммари — {declared_total} компаний в {self.city}")
+                            logger.info(
+                                f"  JSprav: саммари — {declared_total} компаний в {self.city}"
+                            )
 
                     page_companies = self._parse_companies_from_soup(soup, seen_urls)
                     for c in page_companies:
                         c.source_url = url
                     companies.extend(page_companies)
-                    logger.info(f"  JSprav: +{len(page_companies)} компаний (всего {len(companies)})")
+                    logger.info(
+                        f"  JSprav: +{len(page_companies)} компаний (всего {len(companies)})"
+                    )
 
                     # Набрали declared total — стоп
                     if declared_total is not None and len(companies) >= declared_total:
-                        logger.info(f"  JSprav: набрано {len(companies)} из {declared_total} — стоп")
+                        logger.info(
+                            f"  JSprav: набрано {len(companies)} из {declared_total} — стоп"
+                        )
                         break
 
                     # Нет новых компаний — считаем пустую страницу
                     if len(page_companies) == 0:
                         empty_streak += 1
                         if empty_streak >= 2:
-                            logger.info(f"  JSprav: {empty_streak} пустых страниц подряд — стоп")
+                            logger.info(
+                                f"  JSprav: {empty_streak} пустых страниц подряд — стоп"
+                            )
                             break
                     else:
                         empty_streak = 0
