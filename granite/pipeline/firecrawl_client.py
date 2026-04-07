@@ -4,6 +4,7 @@
 Вынесен из PipelineManager для изоляции subprocess-вызовов,
 устранения дублирования JSON-парсинга и возможности мокирования в тестах.
 """
+
 import subprocess
 import json
 import re
@@ -15,7 +16,9 @@ from granite.utils import extract_emails
 class FirecrawlClient:
     """Обёртка над firecrawl CLI (search + scrape)."""
 
-    def __init__(self, timeout: int = 60, search_limit: int = 3, request_delay: float = 2.0):
+    def __init__(
+        self, timeout: int = 60, search_limit: int = 3, request_delay: float = 2.0
+    ):
         self.timeout = timeout
         self.search_limit = search_limit
         self.request_delay = request_delay
@@ -27,7 +30,7 @@ class FirecrawlClient:
 
         Пробует:
         1. Распарсить весь stdout как JSON
-        2. Найти первый {...} блок через regex
+        2. Найти первый {...} блок через regex с балансом скобок
         """
         stdout = stdout.strip()
         if not stdout:
@@ -36,7 +39,8 @@ class FirecrawlClient:
         try:
             return json.loads(stdout)
         except json.JSONDecodeError:
-            m = re.search(r'\{.*\}', stdout, re.DOTALL)
+            # Нежадный поиск с балансом скобок
+            m = re.search(r"\{(?:[^{}]|\{[^{}]*\})*\}", stdout)
             if m:
                 try:
                     return json.loads(m.group())
@@ -55,7 +59,10 @@ class FirecrawlClient:
         try:
             result = subprocess.run(
                 ["firecrawl", "search", query, "--limit", str(self.search_limit)],
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=self.timeout,
             )
             if result.returncode != 0 and result.stderr:
@@ -97,7 +104,10 @@ class FirecrawlClient:
         try:
             result = subprocess.run(
                 ["firecrawl", "scrape", url, "--format", "markdown"],
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=self.timeout,
             )
             if result.returncode != 0 and result.stderr:

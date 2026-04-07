@@ -4,6 +4,7 @@
 Вынесено из PipelineManager — самая сложная фаза пайплайна,
 требующая отдельного тестирования и изоляции.
 """
+
 from loguru import logger
 from granite.database import Database, CompanyRow, EnrichedCompanyRow
 from granite.pipeline.status import print_status
@@ -46,13 +47,20 @@ class EnrichmentPhase:
         with self.db.session_scope() as session:
             if only_new:
                 enriched_ids = {
-                    r[0] for r in
-                    session.query(EnrichedCompanyRow.id).filter_by(city=city).all()
+                    r[0]
+                    for r in session.query(EnrichedCompanyRow.id)
+                    .filter_by(city=city)
+                    .all()
                 }
-                companies = [
-                    c for c in session.query(CompanyRow).filter_by(city=city).all()
-                    if c.id not in enriched_ids
-                ]
+                if enriched_ids:
+                    from sqlalchemy import select
+
+                    stmt = select(CompanyRow).where(
+                        CompanyRow.city == city, CompanyRow.id.notin_(enriched_ids)
+                    )
+                    companies = session.execute(stmt).scalars().all()
+                else:
+                    companies = session.query(CompanyRow).filter_by(city=city).all()
                 if not companies:
                     print_status("Нет новых компаний для обогащения", "info")
                     return 0
@@ -70,8 +78,9 @@ class EnrichmentPhase:
             print_status(f"Обогащение завершено для {count} компаний", "success")
 
             # ПРОХОД 2: точечный поиск недостающих данных через firecrawl
-            self._run_deep_enrich_for(session, companies, city, scanner, tech_ext,
-                                      search_best_url=False)
+            self._run_deep_enrich_for(
+                session, companies, city, scanner, tech_ext, search_best_url=False
+            )
 
             return count
 
@@ -83,17 +92,22 @@ class EnrichmentPhase:
         Returns:
             Количество дополненных компаний.
         """
-        print_status("Точечный поиск недостающих данных (существующие компании)", "info")
+        print_status(
+            "Точечный поиск недостающих данных (существующие компании)", "info"
+        )
 
         with self.db.session_scope() as session:
             all_enriched = session.query(EnrichedCompanyRow).filter_by(city=city).all()
             needs_deep = [
-                e for e in all_enriched
+                e
+                for e in all_enriched
                 if not e.website or not e.emails or len(e.emails) == 0
             ]
 
             if not needs_deep:
-                print_status("Все компании уже с сайтами/email — нечего дополнять", "info")
+                print_status(
+                    "Все компании уже с сайтами/email — нечего дополнять", "info"
+                )
                 return 0
 
             print_status(
@@ -109,8 +123,13 @@ class EnrichmentPhase:
             tech_ext = TechExtractor(self.config)
 
             return self._run_deep_enrich_for(
-                session, needs_deep, city, scanner, tech_ext,
-                search_best_url=True, name_attr="name",
+                session,
+                needs_deep,
+                city,
+                scanner,
+                tech_ext,
+                search_best_url=True,
+                name_attr="name",
             )
 
     def _enrich_companies(self, session, companies: list, scanner, tech_ext) -> int:
@@ -179,17 +198,25 @@ class EnrichmentPhase:
                 if erow.cms:
                     parts.append(f"cms: {erow.cms}")
                 detail = " | ".join(parts) if parts else "нет данных"
-                print_status(f"Обогащено: {count}/{len(companies)} — {c.name_best} ({detail})")
+                print_status(
+                    f"Обогащено: {count}/{len(companies)} — {c.name_best} ({detail})"
+                )
             except Exception as e:
                 session.rollback()
                 logger.error(f"Ошибка обогащения {c.name_best}: {e}")
 
         return count
 
-    def _run_deep_enrich_for(self, session, records: list, city: str,
-                             scanner, tech_ext,
-                             search_best_url: bool = False,
-                             name_attr: str = "name_best") -> int:
+    def _run_deep_enrich_for(
+        self,
+        session,
+        records: list,
+        city: str,
+        scanner,
+        tech_ext,
+        search_best_url: bool = False,
+        name_attr: str = "name_best",
+    ) -> int:
         """Единый метод точечного поиска через firecrawl.
 
         Объединяет бывшие _run_phase_deep_enrich и _run_phase_deep_enrich_existing,
@@ -217,12 +244,14 @@ class EnrichmentPhase:
                 needs_deep.append(r)
 
         if not needs_deep:
-            print_status("Все компании уже с сайтами/email — точечный поиск не нужен", "info")
+            print_status(
+                "Все компании уже с сайтами/email — точечный поиск не нужен", "info"
+            )
             return 0
 
         total_msg = (
             f"Точечный поиск: {len(needs_deep)} компаний без сайта или email"
-            if not hasattr(records[0], '_sa_instance_state') or name_attr == "name_best"
+            if not hasattr(records[0], "_sa_instance_state") or name_attr == "name_best"
             else f"Компаний для точечного поиска: {len(needs_deep)}"
         )
         print_status(total_msg, "info")
@@ -242,8 +271,16 @@ class EnrichmentPhase:
                     continue
 
                 updated = self._deep_enrich_company(
-                    session, erow, company_name, city, scanner, tech_ext,
-                    query, i, len(needs_deep), search_best_url,
+                    session,
+                    erow,
+                    company_name,
+                    city,
+                    scanner,
+                    tech_ext,
+                    query,
+                    i,
+                    len(needs_deep),
+                    search_best_url,
                 )
 
                 if updated:
@@ -255,14 +292,28 @@ class EnrichmentPhase:
                 session.commit()
             except Exception as e:
                 session.rollback()
-                logger.error(f"Ошибка deep enrich для {getattr(record, name_attr, '?')}: {e}")
+                logger.error(
+                    f"Ошибка deep enrich для {getattr(record, name_attr, '?')}: {e}"
+                )
 
-        print_status(f"Точечный поиск: дополнено {found}/{len(needs_deep)} компаний", "success")
+        print_status(
+            f"Точечный поиск: дополнено {found}/{len(needs_deep)} компаний", "success"
+        )
         return found
 
-    def _deep_enrich_company(self, session, erow, company_name: str, city: str,
-                             scanner, tech_ext, query: str, row_num: int, total: int,
-                             search_best_url: bool = True) -> list[str]:
+    def _deep_enrich_company(
+        self,
+        session,
+        erow,
+        company_name: str,
+        city: str,
+        scanner,
+        tech_ext,
+        query: str,
+        row_num: int,
+        total: int,
+        search_best_url: bool = True,
+    ) -> list[str]:
         """Единая логика firecrawl-обогащения для одной компании.
 
         Returns:
@@ -334,7 +385,12 @@ class EnrichmentPhase:
         if new_phones:
             existing_phones = set(erow.phones or [])
             for ph in new_phones:
-                ph_norm = ph.replace("-", "").replace(" ", "").replace("(", "").replace(")", "")
+                ph_norm = (
+                    ph.replace("-", "")
+                    .replace(" ", "")
+                    .replace("(", "")
+                    .replace(")", "")
+                )
                 if ph_norm not in existing_phones:
                     existing_phones.add(ph_norm)
                     updated.append("phone")

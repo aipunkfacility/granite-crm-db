@@ -50,6 +50,9 @@ class FirecrawlScraper(BaseScraper):
         except (subprocess.TimeoutExpired, FileNotFoundError) as e:
             logger.error(f"  Firecrawl CLI ошибка: {e}")
             return None
+        except json.JSONDecodeError as e:
+            logger.error(f"  Firecrawl JSON parse error: {e}")
+            return None
 
     def scrape(self) -> list[RawCompany]:
         companies = []
@@ -77,16 +80,18 @@ class FirecrawlScraper(BaseScraper):
                 if not url or not title:
                     continue
 
-                companies.append(RawCompany(
-                    source=Source.FIRECRAWL,
-                    source_url=url,
-                    name=title,
-                    phones=[],
-                    address_raw="",
-                    website=url,
-                    emails=[],
-                    city=self.city,
-                ))
+                companies.append(
+                    RawCompany(
+                        source=Source.FIRECRAWL,
+                        source_url=url,
+                        name=title,
+                        phones=[],
+                        address_raw="",
+                        website=url,
+                        emails=[],
+                        city=self.city,
+                    )
+                )
 
         logger.info(f"  Firecrawl: найдено {len(companies)} компаний (поиск)")
 
@@ -107,9 +112,7 @@ class FirecrawlScraper(BaseScraper):
                 company.phones = normalize_phones(
                     company.phones + details.get("phones", [])
                 )
-                company.emails = list(set(
-                    company.emails + details.get("emails", [])
-                ))
+                company.emails = list(set(company.emails + details.get("emails", [])))
                 if not company.address_raw and details.get("addresses"):
                     company.address_raw = details["addresses"][0]
                 enriched += 1

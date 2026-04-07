@@ -420,28 +420,28 @@ scoring:
 # ===== Экспорт: Smart Filters / Presets =====
 export_presets:
   hot_leads:
-    description: "Есть TG/WA + производство + высокий приоритет"
-    filters: "telegram IS NOT NULL AND has_production = 1 AND priority_score >= 50"
+    description: "Есть TG/WA + высокий CRM-скор"
+    filters: "telegram IS NOT NULL AND crm_score >= 50"
     format: "csv"
 
-  producers_only:
-    description: "Производители без собственной ретуши"
-    filters: "has_production = 1 AND has_portrait_service = 0 AND status != 'contacted'"
+  high_score:
+    description: "Высокий CRM-скор (сегмент A)"
+    filters: "segment = 'A'"
     format: "csv"
 
   with_telegram:
     description: "Все компании с найденным Telegram"
-    filters: "telegram IS NOT NULL AND status != 'contacted'"
+    filters: "telegram IS NOT NULL"
     format: "csv"
 
   cold_email:
-    description: "Нет мессенджеров, но есть Email и живой сайт"
-    filters: "telegram IS NULL AND whatsapp IS NULL AND email IS NOT NULL AND website_status = 200"
+    description: "Нет мессенджеров, но есть Email"
+    filters: "telegram IS NULL AND whatsapp IS NULL AND emails IS NOT NULL"
     format: "csv"
 
   manual_search:
-    description: "Есть производство, но нет мессенджеров — нужен прозвон"
-    filters: "has_production = 1 AND telegram IS NULL AND whatsapp IS NULL"
+    description: "Нет мессенджеров — нужен прозвон"
+    filters: "telegram IS NULL AND whatsapp IS NULL"
     format: "markdown"
 
   full_dump:

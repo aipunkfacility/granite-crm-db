@@ -2,7 +2,7 @@
 import requests
 from loguru import logger
 from granite.utils import adaptive_delay, get_random_ua
-from granite.enrichers.tg_finder import _tg_request
+from granite.enrichers.tg_finder import tg_request
 from granite.enrichers._tg_common import TG_MAX_RETRIES, TG_INITIAL_BACKOFF
 
 
@@ -11,9 +11,7 @@ def check_tg_trust(url: str) -> dict:
     if not url:
         return {"trust_score": 0}
 
-    headers = {
-        "User-Agent": get_random_ua()
-    }
+    headers = {"User-Agent": get_random_ua()}
 
     result = {
         "has_avatar": False,
@@ -23,7 +21,7 @@ def check_tg_trust(url: str) -> dict:
         "trust_score": 0,
     }
 
-    r = _tg_request(url, headers)
+    r = tg_request(url, headers)
     if not r:
         return result
 
@@ -37,9 +35,7 @@ def check_tg_trust(url: str) -> dict:
         result["has_description"] = True
         result["trust_score"] += 1
 
-    if "tgme_page_extra" in html and (
-        "subscribers" in html or "members" in html
-    ):
+    if "tgme_page_extra" in html and ("subscribers" in html or "members" in html):
         result["is_channel"] = True
         result["trust_score"] -= 1
 

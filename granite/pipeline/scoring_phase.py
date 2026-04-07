@@ -4,6 +4,7 @@
 Вынесено из PipelineManager для независимого вызова
 (например, при обновлении формулы скоринга без пересбора данных).
 """
+
 from collections import Counter
 from granite.database import Database, EnrichedCompanyRow
 from loguru import logger
@@ -36,14 +37,27 @@ class ScoringPhase:
                 return {}
 
             segments = Counter()
+            errors = 0
             for c in companies:
-                d = c.to_dict()
-                score = self.classifier.calculate_score(d)
-                segment = self.classifier.determine_segment(score)
-                c.crm_score = score
-                c.segment = segment
-                segments[segment] += 1
+                try:
+                    d = c.to_dict()
+                    score = self.classifier.calculate_score(d)
+                    segment = self.classifier.determine_segment(score)
+                    c.crm_score = score
+                    c.segment = segment
+                    segments[segment] += 1
+                except Exception as e:
+                    logger.warning(
+                        f"Ошибка скоринга для компании {c.id} ({c.name}): {e}"
+                    )
+                    errors += 1
+                    continue
 
-            summary = ", ".join(f"{seg}: {cnt}" for seg, cnt in sorted(segments.items()))
-            print_status(f"Скоринг: {len(companies)} компаний → {summary}", "success")
+            summary = ", ".join(
+                f"{seg}: {cnt}" for seg, cnt in sorted(segments.items())
+            )
+            status_msg = f"Скоринг: {len(companies)} компаний → {summary}"
+            if errors > 0:
+                status_msg += f" ({errors} ошибок)"
+            print_status(status_msg, "success")
             return dict(segments)

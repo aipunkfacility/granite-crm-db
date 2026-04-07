@@ -1,7 +1,18 @@
 # database.py
 from contextlib import contextmanager
-from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, \
-    DateTime, Text, JSON, ForeignKey, event
+from sqlalchemy import (
+    create_engine,
+    Column,
+    Integer,
+    String,
+    Float,
+    Boolean,
+    DateTime,
+    Text,
+    JSON,
+    ForeignKey,
+    event,
+)
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from datetime import datetime, timezone
 import os
@@ -17,11 +28,11 @@ class RawCompanyRow(Base):
     source = Column(String, nullable=False, index=True)
     source_url = Column(String, default="")
     name = Column(String, nullable=False)
-    phones = Column(JSON, default=list)      # list[str]
+    phones = Column(JSON, default=list)  # list[str]
     address_raw = Column(Text, default="")
     website = Column(String, nullable=True)
-    emails = Column(JSON, default=list)      # list[str]
-    geo = Column(String, nullable=True)      # "lat,lon"
+    emails = Column(JSON, default=list)  # list[str]
+    geo = Column(String, nullable=True)  # "lat,lon"
     messengers = Column(JSON, default=dict)  # {"telegram": "...", "vk": "...", ...}
     scraped_at = Column(DateTime, default=lambda: datetime.now(tz=timezone.utc))
     city = Column(String, nullable=False, index=True)
@@ -33,7 +44,7 @@ class CompanyRow(Base):
     __tablename__ = "companies"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    merged_from = Column(JSON, default=list)   # list[int]
+    merged_from = Column(JSON, default=list)  # list[int]
     name_best = Column(String, nullable=False)
     phones = Column(JSON, default=list)
     address = Column(Text, default="")
@@ -52,26 +63,32 @@ class CompanyRow(Base):
 class EnrichedCompanyRow(Base):
     __tablename__ = "enriched_companies"
 
-    id = Column(Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True)
+    id = Column(
+        Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True
+    )
     name = Column(String, nullable=False)
     phones = Column(JSON, default=list)
     address_raw = Column(Text, default="")
     website = Column(String, nullable=True)
     emails = Column(JSON, default=list)
     city = Column(String, nullable=False, index=True)
-    
+
     # Обогащенные данные
-    messengers = Column(JSON, default=dict)   # {"telegram": "...", "whatsapp": "..."}
-    tg_trust = Column(JSON, default=dict)     # {"trust_score": 3, "has_avatar": True, ...}
+    messengers = Column(JSON, default=dict)  # {"telegram": "...", "whatsapp": "..."}
+    tg_trust = Column(JSON, default=dict)  # {"trust_score": 3, "has_avatar": True, ...}
     cms = Column(String, default="unknown")
     has_marquiz = Column(Boolean, default=False)
     is_network = Column(Boolean, default=False)
-    
+
     # Результаты анализа
     crm_score = Column(Integer, default=0, index=True)
     segment = Column(String, default="D", index=True)
-    
-    updated_at = Column(DateTime, default=lambda: datetime.now(tz=timezone.utc), onupdate=lambda: datetime.now(tz=timezone.utc))
+
+    updated_at = Column(
+        DateTime,
+        default=lambda: datetime.now(tz=timezone.utc),
+        onupdate=lambda: datetime.now(tz=timezone.utc),
+    )
 
     def to_dict(self):
         return {
@@ -88,7 +105,7 @@ class EnrichedCompanyRow(Base):
             "has_marquiz": self.has_marquiz,
             "is_network": self.is_network,
             "crm_score": self.crm_score,
-            "segment": self.segment
+            "segment": self.segment,
         }
 
 
@@ -110,6 +127,7 @@ class PipelineRunRow(Base):
 
 # ===== Синглтон для доступа к БД =====
 
+
 def run_alembic_upgrade(db_path: str, config_path: str = "config.yaml"):
     """
     Запустить Alembic upgrade head для применения миграций.
@@ -126,10 +144,12 @@ def run_alembic_upgrade(db_path: str, config_path: str = "config.yaml"):
 
         # Устанавливаем GRANITE_CONFIG для env.py
         import os
+
         old_granite_config = os.environ.get("GRANITE_CONFIG")
         os.environ["GRANITE_CONFIG"] = config_path
 
         from alembic import command
+
         command.upgrade(alembic_cfg, "head")
 
         # Восстанавливаем старое значение
@@ -141,24 +161,32 @@ def run_alembic_upgrade(db_path: str, config_path: str = "config.yaml"):
     except Exception as e:
         # Если Alembic не настроен или миграций нет — фоллбэк на create_all
         import warnings
+
         warnings.warn(
             f"Alembic upgrade не удалось ({e}), используется create_all(). "
             "Для корректной эволюции схемы настройте Alembic: alembic init alembic",
-            stacklevel=2
+            stacklevel=2,
         )
         raise
 
 
 class Database:
-    def __init__(self, db_path: str = None, config_path: str = "config.yaml", auto_migrate: bool = True):
+    def __init__(
+        self,
+        db_path: str = None,
+        config_path: str = "config.yaml",
+        auto_migrate: bool = True,
+    ):
         if not db_path:
             with open(config_path, "r", encoding="utf-8") as f:
                 config = yaml.safe_load(f)
             db_path = config.get("database", {}).get("path", "data/granite.db")
-        
+
         self._db_path = db_path
         self._config_path = config_path
-        os.makedirs(os.path.dirname(db_path) if os.path.dirname(db_path) else ".", exist_ok=True)
+        os.makedirs(
+            os.path.dirname(db_path) if os.path.dirname(db_path) else ".", exist_ok=True
+        )
 
         # WAL-режим: параллельные записи из ThreadPoolExecutor без "database is locked"
         self.engine = create_engine(
@@ -180,7 +208,10 @@ class Database:
         if auto_migrate:
             try:
                 run_alembic_upgrade(db_path, config_path)
-            except Exception:
+            except Exception as e:
+                logger.warning(
+                    f"Миграции не применились, используем fallback create_all: {e}"
+                )
                 # Фоллбэк: создать таблицы напрямую из ORM-моделей
                 Base.metadata.create_all(self.engine)
         else:
