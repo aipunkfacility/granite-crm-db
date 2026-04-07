@@ -34,6 +34,20 @@ npm install -g firecrawl-cli
 firecrawl login
 ```
 
+### Настройка секретов (опционально)
+
+Для использования API ключей создайте `.env` файл на основе `.env.example`:
+
+```bash
+cp .env.example .env
+# Отредактируйте .env и добавьте ваши API ключи
+```
+
+Поддерживаемые переменные:
+- `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` — Telegram API (опционально)
+- `TELESCAN_API_KEY` — Telescan API (опционально)
+- `FIRECRAWL_API_KEY` — Firecrawl API (опционально)
+
 ## Запуск
 
 ```bash
@@ -433,11 +447,11 @@ run "Астрахань"
 
 | Пресет | Описание |
 |--------|----------|
-| `hot_leads` | Есть TG + производство + высокий приоритет |
-| `producers_only` | Производители без ретуши, не контактированные |
+| `hot_leads` | Есть Telegram + высокий CRM-скор (≥50) |
+| `high_score` | Сегмент A (высокий приоритет) |
 | `with_telegram` | Все компании с Telegram |
-| `cold_email` | Нет мессенджеров, но есть email и живой сайт |
-| `manual_search` | Есть производство, но нет мессенджеров — нужен прозвон |
+| `cold_email` | Нет мессенджеров, но есть email |
+| `manual_search` | Нет мессенджеров — нужен прозвон |
 | `full_dump` | Все обогащённые компании |
 
 ```bash
