@@ -236,7 +236,8 @@ class TestModels:
         assert rc.geo == [46.35, 48.03]
 
     def test_source_enum(self):
-        assert Source.FIRECRAWL == "firecrawl"
+        assert Source.WEB_SEARCH == "web_search"
+        assert Source.FIRECRAWL == "firecrawl"  # LEGACY
         assert Source.JSPRAV == "jsprav"
         assert Source.DGIS == "2gis"
 

@@ -280,15 +280,21 @@ scraping:
 
 # ===== Настройки источников =====
 sources:
-  firecrawl:
+  web_search:
     enabled: true
     max_retries: 3
+    search_limit: 10
     queries:
       - "гранитная мастерская памятники"
       - "производство памятников гранит"
       - "мастерская по изготовлению памятников"
       - "гранит памятники надгробия"
       - "изготовление памятников из гранита"
+
+  # LEGACY — firecrawl заменён на web_search (requests + BeautifulSoup)
+  # Секция оставлена для обратной совместимости, не используется
+  # firecrawl:
+  #   enabled: false
 
   jsprav:
     enabled: true
