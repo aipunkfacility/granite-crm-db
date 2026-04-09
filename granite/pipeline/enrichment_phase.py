@@ -10,7 +10,7 @@ from granite.database import Database, CompanyRow, EnrichedCompanyRow
 from granite.pipeline.status import print_status
 from granite.pipeline.web_client import WebClient
 from granite.pipeline.region_resolver import RegionResolver
-from granite.utils import normalize_phone
+from granite.utils import normalize_phone, normalize_phones
 
 # Import Enrichers
 from granite.enrichers.messenger_scanner import MessengerScanner
@@ -152,10 +152,26 @@ class EnrichmentPhase:
                     valid_url, status = validate_website(c.website)
                     erow.website = valid_url
                     if valid_url and status == 200:
-                        site_messengers = scanner.scan_website(valid_url)
-                        for k, v in site_messengers.items():
-                            if k not in messengers:
+                        site_data = scanner.scan_website(valid_url)
+                        # Мессенджеры
+                        for k, v in site_data.items():
+                            if not k.startswith("_") and k not in messengers:
                                 messengers[k] = v
+
+                        # Email из сайта
+                        site_emails = site_data.get("_emails", [])
+                        if site_emails:
+                            existing_emails = set(erow.emails or [])
+                            for em in site_emails:
+                                existing_emails.add(em)
+                            erow.emails = list(existing_emails)
+
+                        # Телефоны из сайта
+                        site_phones = site_data.get("_phones", [])
+                        if site_phones:
+                            erow.phones = normalize_phones(
+                                (erow.phones or []) + site_phones
+                            )
 
                         tech = tech_ext.extract(valid_url)
                         erow.cms = tech.get("cms", "unknown")
@@ -191,6 +207,8 @@ class EnrichmentPhase:
                 parts = []
                 if erow.messengers:
                     parts.append(f"мессенджеры: {', '.join(erow.messengers.keys())}")
+                if erow.emails:
+                    parts.append(f"email: {len(erow.emails)}")
                 if erow.cms:
                     parts.append(f"cms: {erow.cms}")
                 detail = " | ".join(parts) if parts else "нет данных"
