@@ -8,7 +8,7 @@ from granite.regions import get_region_cities
 
 __all__ = ["STANDARD_SOURCES", "RegionResolver"]
 
-STANDARD_SOURCES = ["jsprav", "firecrawl", "dgis", "yell", "firmsru"]
+STANDARD_SOURCES = ["jsprav", "web_search", "dgis", "yell", "firmsru"]
 
 
 class RegionResolver:

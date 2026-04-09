@@ -464,13 +464,28 @@ class TestMessengerScanner:
         assert "whatsapp" in result
         assert "vk" in result
 
+    def test_extract_emails_from_html(self, scanner):
+        """Email извлекается из mailto: и текста."""
+        html = '<a href="mailto:info@granit.ru">info@granit.ru</a><p>sales@test.ru</p>'
+        result = {}
+        scanner._extract_emails(html, result)
+        assert "info@granit.ru" in result["_emails"]
+        assert "sales@test.ru" in result["_emails"]
+
+    def test_extract_phones_from_html(self, scanner):
+        """Телефоны извлекаются из tel: и текста."""
+        html = '<a href="tel:+79031234567">Позвонить</a><p>+7 (999) 111-22-33</p>'
+        result = {}
+        scanner._extract_phones(html, result)
+        assert len(result["_phones"]) >= 2
+
     def test_scan_website_empty_url(self, scanner):
         result = scanner.scan_website("")
-        assert result == {}
+        assert result == {"_emails": [], "_phones": []}
 
     def test_scan_website_none_url(self, scanner):
         result = scanner.scan_website(None)
-        assert result == {}
+        assert result == {"_emails": [], "_phones": []}
 
     def test_find_relevant_links(self, scanner):
         html = (

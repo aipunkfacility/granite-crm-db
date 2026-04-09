@@ -1,5 +1,5 @@
 # pipeline/enrichment_phase.py
-"""Фаза 3: обогащение данных компании (сайт-сканирование, Telegram, firecrawl).
+"""Фаза 3: обогащение данных компании (сайт-сканирование, Telegram, веб-поиск).
 
 Вынесено из PipelineManager — самая сложная фаза пайплайна,
 требующая отдельного тестирования и изоляции.
@@ -8,9 +8,9 @@
 from loguru import logger
 from granite.database import Database, CompanyRow, EnrichedCompanyRow
 from granite.pipeline.status import print_status
-from granite.pipeline.firecrawl_client import FirecrawlClient
+from granite.pipeline.web_client import WebClient
 from granite.pipeline.region_resolver import RegionResolver
-from granite.utils import normalize_phone
+from granite.utils import normalize_phone, normalize_phones
 
 # Import Enrichers
 from granite.enrichers.messenger_scanner import MessengerScanner
@@ -21,18 +21,18 @@ from granite.dedup.validator import validate_website
 
 
 class EnrichmentPhase:
-    """Обогащение: мессенджеры, Telegram, CMS, точечный firecrawl-поиск."""
+    """Обогащение: мессенджеры, Telegram, CMS, точечный веб-поиск."""
 
-    def __init__(self, config: dict, db: Database, firecrawl: FirecrawlClient):
+    def __init__(self, config: dict, db: Database, web_client: WebClient):
         """
         Args:
             config: словарь конфигурации (config.yaml).
             db: экземпляр Database.
-            firecrawl: экземпляр FirecrawlClient.
+            web_client: экземпляр WebClient.
         """
         self.config = config
         self.db = db
-        self.firecrawl = firecrawl
+        self.web = web_client
         self._resolver = RegionResolver(config)
 
     def run(self, city: str, only_new: bool = False) -> int:
@@ -74,7 +74,7 @@ class EnrichmentPhase:
             count = self._enrich_companies(session, companies, scanner, tech_ext)
             print_status(f"Обогащение завершено для {count} компаний", "success")
 
-            # ПРОХОД 2: точечный поиск недостающих данных через firecrawl
+            # ПРОХОД 2: точечный поиск недостающих данных через веб
             self._run_deep_enrich_for(
                 session, companies, city, scanner, tech_ext, search_best_url=False
             )
@@ -84,7 +84,7 @@ class EnrichmentPhase:
     def run_deep_enrich_existing(self, city: str) -> int:
         """Точечный поиск для уже обогащённых компаний (--re-enrich).
 
-        Заполняет пустые website/email через firecrawl.
+        Заполняет пустые website/email через веб-поиск.
 
         Returns:
             Количество дополненных компаний.
@@ -108,8 +108,8 @@ class EnrichmentPhase:
                 "info",
             )
 
-            if not self._resolver.is_source_enabled("firecrawl"):
-                print_status("Firecrawl отключён — точечный поиск пропущен", "warning")
+            if not self._resolver.is_source_enabled("web_search"):
+                print_status("Веб-поиск отключён — точечный поиск пропущен", "warning")
                 return 0
 
             scanner = MessengerScanner(self.config)
@@ -152,10 +152,26 @@ class EnrichmentPhase:
                     valid_url, status = validate_website(c.website)
                     erow.website = valid_url
                     if valid_url and status == 200:
-                        site_messengers = scanner.scan_website(valid_url)
-                        for k, v in site_messengers.items():
-                            if k not in messengers:
+                        site_data = scanner.scan_website(valid_url)
+                        # Мессенджеры
+                        for k, v in site_data.items():
+                            if not k.startswith("_") and k not in messengers:
                                 messengers[k] = v
+
+                        # Email из сайта
+                        site_emails = site_data.get("_emails", [])
+                        if site_emails:
+                            existing_emails = set(erow.emails or [])
+                            for em in site_emails:
+                                existing_emails.add(em)
+                            erow.emails = list(existing_emails)
+
+                        # Телефоны из сайта
+                        site_phones = site_data.get("_phones", [])
+                        if site_phones:
+                            erow.phones = normalize_phones(
+                                (erow.phones or []) + site_phones
+                            )
 
                         tech = tech_ext.extract(valid_url)
                         erow.cms = tech.get("cms", "unknown")
@@ -191,6 +207,8 @@ class EnrichmentPhase:
                 parts = []
                 if erow.messengers:
                     parts.append(f"мессенджеры: {', '.join(erow.messengers.keys())}")
+                if erow.emails:
+                    parts.append(f"email: {len(erow.emails)}")
                 if erow.cms:
                     parts.append(f"cms: {erow.cms}")
                 detail = " | ".join(parts) if parts else "нет данных"
@@ -214,7 +232,7 @@ class EnrichmentPhase:
         search_best_url: bool = False,
         name_attr: str = "name_best",
     ) -> int:
-        """Единый метод точечного поиска через firecrawl.
+        """Единый метод точечного поиска через веб.
 
         Объединяет бывшие _run_phase_deep_enrich и _run_phase_deep_enrich_existing,
         различающиеся только источником данных и флагом search_best_url.
@@ -253,8 +271,8 @@ class EnrichmentPhase:
         )
         print_status(total_msg, "info")
 
-        if not self._resolver.is_source_enabled("firecrawl"):
-            print_status("Firecrawl отключён — точечный поиск пропущен", "warning")
+        if not self._resolver.is_source_enabled("web_search"):
+            print_status("Веб-поиск отключён — точечный поиск пропущен", "warning")
             return 0
 
         found = 0
@@ -313,14 +331,14 @@ class EnrichmentPhase:
         total: int,
         search_best_url: bool = True,
     ) -> list[str]:
-        """Единая логика firecrawl-обогащения для одной компании.
+        """Единая логика веб-обогащения для одной компании.
 
         Returns:
             Список обновлённых полей (например ["website", "email"]).
         """
-        logger.info(f"  [{row_num}/{total}] Firecrawl поиск: {query}")
+        logger.info(f"  [{row_num}/{total}] Веб-поиск: {query}")
 
-        result = self.firecrawl.search(query)
+        result = self.web.search(query)
         if not result:
             logger.debug(f"  Пустой ответ для '{query}'")
             return []
@@ -350,7 +368,7 @@ class EnrichmentPhase:
 
         logger.info(f"  Найден сайт: {best_url} для {company_name}")
 
-        details = self.firecrawl.scrape(best_url)
+        details = self.web.scrape(best_url)
         if not details:
             logger.debug(f"  Скрапинг не дал данных для {best_url}")
             return []

@@ -2,11 +2,11 @@
 """Лёгкий оркестратор пайплайна обогащения данных.
 
 Рефакторинг: из 807 строк → ~60. Вся бизнес-логика вынесена в отдельные фазы:
-  - pipeline/firecrawl_client.py — FirecrawlClient (subprocess CLI)
+  - pipeline/web_client.py — WebClient (requests + BeautifulSoup)
   - pipeline/region_resolver.py — RegionResolver (конфигурация городов)
   - pipeline/scraping_phase.py   — ScrapingPhase (скрапинг)
   - pipeline/dedup_phase.py      — DedupPhase (дедупликация)
-  - pipeline/enrichment_phase.py — EnrichmentPhase (обогащение + firecrawl)
+  - pipeline/enrichment_phase.py — EnrichmentPhase (обогащение + веб-поиск)
   - pipeline/scoring_phase.py    — ScoringPhase (скоринг + сегментация)
   - pipeline/export_phase.py     — ExportPhase (CSV + пресеты)
 """
@@ -16,7 +16,7 @@ from granite.database import Database
 from granite.pipeline.checkpoint import CheckpointManager
 from granite.pipeline.status import print_status
 
-from granite.pipeline.firecrawl_client import FirecrawlClient
+from granite.pipeline.web_client import WebClient
 from granite.pipeline.region_resolver import RegionResolver
 from granite.pipeline.scraping_phase import ScrapingPhase
 from granite.pipeline.dedup_phase import DedupPhase
@@ -36,14 +36,17 @@ class PipelineManager:
         self.checkpoints = CheckpointManager(db)
 
         self.region = RegionResolver(config)
-        fc_config = config.get("sources", {}).get("firecrawl", {})
-        self.firecrawl = FirecrawlClient(
-            timeout=fc_config.get("timeout", 60),
-            search_limit=fc_config.get("search_limit", 3),
+        # Поддержка web_search (новый) и firecrawl (legacy) секций конфига
+        wc_config = config.get("sources", {}).get("web_search", {})
+        if not wc_config:
+            wc_config = config.get("sources", {}).get("firecrawl", {})
+        self.web = WebClient(
+            timeout=wc_config.get("timeout", 60),
+            search_limit=wc_config.get("search_limit", 3),
         )
         self.scraping = ScrapingPhase(config, db, self.region)
         self.dedup = DedupPhase(db)
-        self.enrichment = EnrichmentPhase(config, db, self.firecrawl)
+        self.enrichment = EnrichmentPhase(config, db, self.web)
         self.export = ExportPhase(config, db)
         # Lazy-loaded: ScoringPhase, NetworkDetector (тяжёлые зависимости)
         self._scoring = None

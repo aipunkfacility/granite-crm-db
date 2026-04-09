@@ -13,7 +13,8 @@ __all__ = [
 
 
 class Source(str, Enum):
-    FIRECRAWL = "firecrawl"
+    WEB_SEARCH = "web_search"
+    FIRECRAWL = "firecrawl"  # LEGACY — не используется, оставлено для совместимости
     JSPRAV = "jsprav"
     JSPRAV_PW = "jsprav_playwright"
     DGIS = "2gis"

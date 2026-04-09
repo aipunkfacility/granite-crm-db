@@ -2,41 +2,51 @@
 import re
 from urllib.parse import urljoin, urlparse
 from loguru import logger
-from granite.utils import fetch_page, adaptive_delay, is_safe_url
+from granite.utils import fetch_page, adaptive_delay, is_safe_url, extract_emails
 
 
 class MessengerScanner:
-    """Сканирует сайт на наличие ссылок на мессенджеры и соцсети."""
+    """Сканирует сайт на наличие контактов: мессенджеры, email, телефоны."""
 
     def __init__(self, config: dict):
         pass
 
     def scan_website(self, base_url: str) -> dict:
-        """Сканирует сайт: сначала главная, затем найденные страницы."""
-        found_messengers: dict = {}
+        """Сканирует сайт и возвращает найденные контакты.
+
+        Returns:
+            dict с ключами: telegram, whatsapp, vk, _emails, _phones.
+            Ключи с "_" — технические, используются для обогащения.
+        """
+        found: dict = {
+            "_emails": [],
+            "_phones": [],
+        }
 
         if not base_url:
-            return found_messengers
+            return found
 
         base_url_clean = base_url.rstrip("/")
 
         if not is_safe_url(base_url_clean):
-            return found_messengers
+            return found
 
         html = None
-        contacts_url = None
 
         # 1. Сканируем главную страницу
         try:
             html = fetch_page(base_url_clean + "/", timeout=10)
             if html:
-                self._extract_social_links(html, found_messengers)
+                self._extract_social_links(html, found)
+                self._extract_emails(html, found)
+                self._extract_phones(html, found)
         except Exception as e:
             logger.debug(f"MessengerScanner scan_website main page error: {e}")
 
-        # Если уже нашли telegram — скорее всего этого достаточно
-        if "telegram" in found_messengers:
-            return found_messengers
+        # Если уже нашли telegram — скорее всего этого достаточно для мессенджеров,
+        # но email/телефоны всё равно ищем дальше
+        if "telegram" in found:
+            pass  # продолжаем искать email
 
         # 2. Ищем ссылки на странице контактов с главной
         try:
@@ -49,15 +59,18 @@ class MessengerScanner:
                 else:
                     chtml = fetch_page(contacts_url, timeout=10)
                 if chtml:
-                    self._extract_social_links(chtml, found_messengers)
+                    self._extract_social_links(chtml, found)
+                    self._extract_emails(chtml, found)
+                    self._extract_phones(chtml, found)
                     # На странице контактов ищем ссылки на другие страницы
                     extra_links = self._find_relevant_links(chtml, base_url_clean)
                     for link in extra_links:
                         if link == contacts_url:
                             continue
                         if (
-                            "telegram" in found_messengers
-                            and "whatsapp" in found_messengers
+                            "telegram" in found
+                            and "whatsapp" in found
+                            and found.get("_emails")
                         ):
                             break
                         if not is_safe_url(link):
@@ -66,14 +79,59 @@ class MessengerScanner:
                             adaptive_delay()
                             ehtml = fetch_page(link, timeout=10)
                             if ehtml:
-                                self._extract_social_links(ehtml, found_messengers)
+                                self._extract_social_links(ehtml, found)
+                                self._extract_emails(ehtml, found)
+                                self._extract_phones(ehtml, found)
                         except Exception as e:
                             logger.debug(f"MessengerScanner extra page error: {e}")
                             continue
         except Exception as e:
             logger.debug(f"MessengerScanner contacts page error: {e}")
 
-        return found_messengers
+        return found
+
+    def _extract_emails(self, html: str, result: dict):
+        """Извлекает email из HTML: mailto: ссылки + текст."""
+        if not html:
+            return
+
+        emails = result.setdefault("_emails", [])
+
+        # mailto: ссылки (приоритет — обычно реальные)
+        for m in re.finditer(r'href=["\']mailto:([^"\'\s?]+)', html, re.IGNORECASE):
+            email = m.group(1).strip()
+            if email and email not in emails:
+                emails.append(email)
+
+        # Email из текста
+        text_emails = extract_emails(html)
+        for em in text_emails:
+            if em not in emails:
+                emails.append(em)
+
+    def _extract_phones(self, html: str, result: dict):
+        """Извлекает телефоны из HTML: tel: ссылки + текст."""
+        if not html:
+            return
+
+        phones = result.setdefault("_phones", [])
+
+        # tel: ссылки (приоритет)
+        for m in re.finditer(r'href=["\']tel:([^"\'\s]+)', html, re.IGNORECASE):
+            phone = m.group(1).strip()
+            if phone and phone not in phones:
+                phones.append(phone)
+
+        # Текст страницы
+        # Простой текст: убираем теги
+        text = re.sub(r"<[^>]+>", " ", html)
+        text_phones = re.findall(
+            r"(\+?7[\s\-()]*\d{3}[\s\-()]*\d{3}[\s\-()]*\d{2}[\s\-()]*\d{2})",
+            text,
+        )
+        for p in text_phones:
+            if p not in phones:
+                phones.append(p)
 
     def _find_contacts_link(self, base_url: str, html: str) -> str | None:
         """Ищет ссылку на страницу контактов в HTML главной страницы."""

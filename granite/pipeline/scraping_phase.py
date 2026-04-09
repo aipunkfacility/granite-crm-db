@@ -18,7 +18,7 @@ from granite.scrapers.jsprav import JspravScraper
 from granite.scrapers.dgis import DgisScraper
 from granite.scrapers.yell import YellScraper
 from granite.scrapers.firmsru import FirmsruScraper
-from granite.scrapers.firecrawl import FirecrawlScraper
+from granite.scrapers.web_search import WebSearchScraper
 
 __all__ = ["ScrapingPhase"]
 
@@ -131,9 +131,9 @@ class ScrapingPhase:
             )
             city_results.extend(jsprav.run())
 
-        if self.region_resolver.is_source_enabled("firecrawl"):
-            firecrawl = FirecrawlScraper(self.config, rc)
-            city_results.extend(firecrawl.run())
+        if self.region_resolver.is_source_enabled("web_search"):
+            web_search = WebSearchScraper(self.config, rc)
+            city_results.extend(web_search.run())
 
         # 2. Playwright скреперы (NOT parallelizable — shared browser session)
         pw_sources = ["dgis", "yell", "firmsru"]
