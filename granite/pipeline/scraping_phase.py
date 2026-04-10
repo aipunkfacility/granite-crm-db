@@ -24,7 +24,7 @@ __all__ = ["ScrapingPhase"]
 
 
 class ScrapingPhase:
-    """Координация скраперов: категорийный поиск + сбор данных."""
+    """Координация скреперов: категорийный поиск + сбор данных."""
 
     def __init__(self, config: dict, db: Database, region_resolver):
         """
@@ -115,14 +115,21 @@ class ScrapingPhase:
         return raw_results
 
     def _scrape_single_city(self, rc: str, city: str, cat_cache: dict) -> list:
-        """Скрапинг одного города (для ThreadPoolExecutor)."""
+        """Скрапинг одного города (для ThreadPoolExecutor).
+
+        Порядок:
+        1. Быстрые скреперы (jsprav, web_search) — без браузера.
+        2. Playwright-зависимые скреперы (jsprav_playwright) — общий контекст.
+        3. Crawlee-скреперы (dgis, yell) — управляют собственным браузером.
+        """
         print_status(f"  Парсинг: {rc}", "info")
         city_results = []
 
         jsprav_cats = get_categories(cat_cache, "jsprav", rc)
         jsprav_sub = get_subdomain(cat_cache, "jsprav", rc, self.config)
         yell_cats = get_categories(cat_cache, "yell", rc)
-        # 1. Быстрые скреперы (без Playwright)
+
+        # ── 1. Быстрые скреперы (без браузера) ──
         jsprav_needs_pw = False
         if self.region_resolver.is_source_enabled("jsprav"):
             jsprav = JspravScraper(
@@ -144,65 +151,62 @@ class ScrapingPhase:
             web_search = WebSearchScraper(self.config, rc)
             city_results.extend(web_search.run())
 
-        # 2. Playwright скреперы
-        pw_sources = ["dgis", "yell"]
-        has_pw_sources = any(
-            self.region_resolver.is_source_enabled(s) for s in pw_sources
-        )
+        # ── 2. Playwright скреперы (jsprav_playwright fallback) ──
         jsprav_pw_enabled = self.config.get("sources", {}).get(
             "jsprav_playwright", {}
         ).get("enabled", False)
 
-        if has_pw_sources or jsprav_needs_pw or jsprav_pw_enabled:
+        if jsprav_needs_pw or jsprav_pw_enabled:
             with playwright_session(headless=True) as (browser, page):
-                if page:
-                    # JSprav Playwright fallback — добор через «Показать ещё»
-                    if (jsprav_needs_pw or jsprav_pw_enabled) and jsprav_cats:
-                        pw_kwargs = dict(
-                            config=self.config,
-                            city=rc,
-                            playwright_page=page,
-                            categories=jsprav_cats,
-                            subdomain=jsprav_sub,
-                        )
-                        # Совместимость: mode поддерживается только в новых версиях
-                        try:
-                            jsprav_pw = JspravPlaywrightScraper(**pw_kwargs, mode="click_more")
-                        except TypeError:
-                            jsprav_pw = JspravPlaywrightScraper(**pw_kwargs)
-                        pw_results = jsprav_pw.run()
-                        # Дедуплируем: исключаем компании, уже найденные JspravScraper
-                        # Используем URL и телефон для точного matching (а не только имя)
-                        seen_urls = {c.website for c in city_results if c.website}
-                        seen_phones = set()
-                        for c in city_results:
+                if page and jsprav_cats:
+                    pw_kwargs = dict(
+                        config=self.config,
+                        city=rc,
+                        playwright_page=page,
+                        categories=jsprav_cats,
+                        subdomain=jsprav_sub,
+                    )
+                    # Совместимость: mode поддерживается только в новых версиях
+                    try:
+                        jsprav_pw = JspravPlaywrightScraper(**pw_kwargs, mode="click_more")
+                    except TypeError:
+                        jsprav_pw = JspravPlaywrightScraper(**pw_kwargs)
+                    pw_results = jsprav_pw.run()
+                    # Дедуплируем: исключаем компании, уже найденные JspravScraper
+                    # Используем URL и телефон для точного matching (а не только имя)
+                    seen_urls = {c.website for c in city_results if c.website}
+                    seen_phones = set()
+                    for c in city_results:
+                        for p in c.phones:
+                            seen_phones.add(p)
+                    new_results = []
+                    for c in pw_results:
+                        is_dup = False
+                        if c.website and c.website in seen_urls:
+                            is_dup = True
+                        if not is_dup:
                             for p in c.phones:
-                                seen_phones.add(p)
-                        new_results = []
-                        for c in pw_results:
-                            is_dup = False
-                            if c.website and c.website in seen_urls:
-                                is_dup = True
-                            if not is_dup:
-                                for p in c.phones:
-                                    if p in seen_phones:
-                                        is_dup = True
-                                        break
-                            if not is_dup:
-                                new_results.append(c)
-                        city_results.extend(new_results)
-                        if new_results:
-                            logger.info(
-                                f"  JSprav PW: добрано {len(new_results)} новых компаний для {rc}"
-                            )
+                                if p in seen_phones:
+                                    is_dup = True
+                                    break
+                        if not is_dup:
+                            new_results.append(c)
+                    city_results.extend(new_results)
+                    if new_results:
+                        logger.info(
+                            f"  JSprav PW: добрано {len(new_results)} новых компаний для {rc}"
+                        )
 
-                    if has_pw_sources:
-                        if self.region_resolver.is_source_enabled("dgis"):
-                            dgis = DgisScraper(self.config, rc, page)
-                            city_results.extend(dgis.run())
-                        if self.region_resolver.is_source_enabled("yell"):
-                            yell = YellScraper(self.config, rc, page, categories=yell_cats)
-                            city_results.extend(yell.run())
+        # ── 3. Crawlee-скреперы (dgis, yell) ──
+        # DgisScraper и YellScraper управляют собственным браузером через Crawlee.
+        # Их НЕ нужно запускать внутри playwright_session().
+        if self.region_resolver.is_source_enabled("dgis"):
+            dgis = DgisScraper(self.config, rc)
+            city_results.extend(dgis.run())
+
+        if self.region_resolver.is_source_enabled("yell"):
+            yell = YellScraper(self.config, rc, categories=yell_cats)
+            city_results.extend(yell.run())
 
         return city_results
 

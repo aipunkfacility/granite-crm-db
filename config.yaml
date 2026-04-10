@@ -342,11 +342,18 @@ sources:
     enabled: false
     max_retries: 3
     search_category: "изготовление памятников"
+    # Phase 7: Crawlee + 2GIS API
+    api_key: ""                  # из .env: DGIS_API_KEY (приоритетнее env)
+    max_pages: 5                 # страниц пагинации (API mode)
+    delay: 1.5                   # секунд между запросами к API
 
   yell:
     enabled: false
     max_retries: 3
     base_path: "/catalog/izgotovlenie_pamyatnikov/"
+    # Phase 7: Crawlee PlaywrightCrawler
+    max_pages: 5                 # страниц пагинации («Показать ещё»)
+    delay: 2.0                   # секунд между действиями
 
   jsprav_playwright:
     enabled: true  # авто-fallback: запускается если JspravScraper не добрал компании
