@@ -24,7 +24,7 @@
 | D | Scoring | ScoringPhase | enriched_companies (crm_score, segment) |
 | E | Export | ExportPhase | CSV / Markdown файлы |
 
-Оркестратор: `PipelineManager` (manager.py) координирует фазы через `CheckpointManager`. Контрольно-точки сохраняются в `pipeline_runs`. Поток идёт по цепочке: start → scraped → deduped → enriched.
+Оркестратор: `PipelineManager` (manager.py) координирует фазы через `CheckpointManager`. Контрольно-точки работают через подсчёт записей в таблицах. Поток идёт по цепочке: start → scraped → deduped → enriched.
 
 **Зачем карта:** каждая таблица — это узел, где данные могут исказиться. Проверяй каждый переход: ScrapingPhase сохраняет RawCompany → Database, DedupPhase читает RawCompanyRow → пишет CompanyRow, и т.д.
 
@@ -79,7 +79,7 @@ grep -rn "fetch_page\|requests.get\|requests.head\|subprocess.run" --include="*.
 **Типичные проблемы:**
 - `validator.py` проверяет `_is_internal_url` до очистки URL (порядок операций)
 - `messenger_scanner.py` и `tech_extractor.py` не вызывают `is_safe_url()` вообще
-- `firecrawl.py` передаёт URL в subprocess без валидации
+- удалённые модули (firecrawl.py, firecrawl_client.py) — проверка URL была не полной
 - `jsprav.py` интерполирует subdomain без regex-проверки
 
 ### 4.2. Потеря данных (data loss)
@@ -92,7 +92,7 @@ grep -rn "merge_cluster\|CompanyRow(\|EnrichedCompanyRow(\|session.add" --includ
 
 - `merge_cluster()` возвращает dict с `merged_from` и `messengers`, но вызов `CompanyRow()` может их не принять.
 - `_deep_enrich_company()` накапливает `updated = ["email", "email", "email"]` — дублирование.
-- JSON-парсер в `firecrawl_client.py` не обрабатывает `{` внутри строк.
+- JSON-парсер в удалённом `firecrawl_client.py` не обрабатывал `{` внутри строк (модуль удалён).
 
 ### 4.3. Логика (bugs)
 
@@ -122,7 +122,7 @@ for table_name, table in orm_tables.items():
     print(f"Extra in DB: {db_columns - orm_columns}")
 ```
 
-Что искать: отсутствующие таблицы (pipeline_runs), отсутствующие FK (merged_into), отсутствующие индексы.
+Что искать: отсутствующие FK (merged_into), отсутствующие индексы.
 
 ---
 
@@ -136,7 +136,7 @@ for table_name, table in orm_tables.items():
 |---|---|
 | manager.py | Лишние eager-инстанциации, хрупкие checkpoint-переходы |
 | enrichment_phase.py | Размер (>150 строк = плохо), дублирование логики, ненужные `.commit()` |
-| firecrawl_client.py | JSON-парсер (обрабатывает ли `{` в строках?), URL-валидация |
+| web_client.py | WebClient (requests+BeautifulSoup), URL-валидация, поиск через DuckDuckGo |
 | dedup_phase.py | Передаются ли все поля из `merge_cluster()` в `CompanyRow()`? |
 | scoring_phase.py | `except Exception` — слишком широкий? |
 | checkpoint.py | Явный `session.commit()` внутри `session_scope()`? |
@@ -167,7 +167,7 @@ for table_name, table in orm_tables.items():
 | Файл | На что смотреть |
 |---|---|
 | Все | DRY-нарушение: вынести общие паттерны в BaseScraper |
-| firecrawl.py | `tempfile.mkdtemp()` без cleanup при SIGKILL. URL-валидация? |
+| web_search.py | DuckDuckGo поиск + скрапинг сайтов, заменил firecrawl |
 | jsprav.py | `rstrip("аеоуияью")` снимает символы, не подстроки. `requests.get` без retry |
 | dgis.py | Только 3 итерации скролла —.lazy-loaded карточки ниже не подгрузятся |
 | jsprav_playwright.py | `a[href*='http']` мачает CDN/tracking-пиксели |

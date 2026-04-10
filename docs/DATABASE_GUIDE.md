@@ -21,7 +21,6 @@ config.yaml                 granite/database.py              alembic/
                      │ RawCompany (Pydantic)│
                      │ Company (Pydantic)   │
                      │ EnrichedCompany      │
-                     │ PipelineRun          │
                      └─────────────────────┘
 ```
 
@@ -34,7 +33,7 @@ config.yaml                 granite/database.py              alembic/
 | Колонка | Тип | Описание |
 |---------|-----|----------|
 | `id` | INTEGER PK | Автоинкремент |
-| `source` | VARCHAR, NOT NULL | Источник: `jsprav`, `firecrawl`, `2gis`, `yell`, `firmsru` |
+| `source` | VARCHAR, NOT NULL | Источник: `jsprav`, `web_search`, `2gis`, `yell` |
 | `source_url` | VARCHAR | URL страницы-источника |
 | `name` | VARCHAR, NOT NULL | Название компании (как на сайте) |
 | `phones` | JSON | Список телефонов `["79001234567", ...]` |
@@ -83,7 +82,7 @@ config.yaml                 granite/database.py              alembic/
 | `name` | VARCHAR | Копия `name_best` |
 | `phones` | JSON | Телефоны (могут быть дополнены) |
 | `address_raw` | TEXT | Копия адреса |
-| `website` | VARCHAR | Сайт (может быть найден через firecrawl) |
+| `website` | VARCHAR | Сайт (может быть найден через web_search) |
 | `emails` | JSON | Email (могут быть дополнены) |
 | `city` | VARCHAR, NOT NULL | Город (индекс) |
 | `messengers` | JSON | Итоговые мессенджеры `{"telegram": "t.me/...", "whatsapp": "..."}` |
@@ -97,26 +96,7 @@ config.yaml                 granite/database.py              alembic/
 
 Индексы: `ix_enriched_companies_city`, `ix_enriched_companies_crm_score`, `ix_enriched_companies_segment`.
 
-### 2.4 pipeline_runs — история запусков
-
-⚠️ **DEPRECATED** — таблица больше не используется. Чекпоинты работают через подсчёт записей в `raw_companies`, `companies` и `enriched_companies` (класс `CheckpointManager`).
-
-| Колонка | Тип | Описание |
-|---------|-----|----------|
-| `id` | INTEGER PK | Автоинкремент |
-| `city` | VARCHAR, NOT NULL | Город (индекс) |
-| `stage` | VARCHAR, NOT NULL | `start` / `scraped` / `deduped` / `enriched` |
-| `source` | VARCHAR | Конкретный источник (если применимо) |
-| `started_at` | DATETIME | Время старта (UTC) |
-| `finished_at` | DATETIME | Время завершения (NULL = в процессе) |
-| `records_found` | INTEGER | Найдено записей |
-| `records_errors` | INTEGER | Ошибок |
-| `status` | VARCHAR | `running` / `completed` / `failed` |
-| `error_message` | TEXT | Текст ошибки |
-
-Индекс: `ix_pipeline_runs_city`.
-
-### 2.5 alembic_version — служебная таблица
+### 2.4 alembic_version — служебная таблица
 
 Создаётся и управляется Alembic автоматически. Хранит текущую ревизию схемы:
 
@@ -124,7 +104,7 @@ config.yaml                 granite/database.py              alembic/
 |---------|-----|----------|
 | `version_num` | VARCHAR | ID текущей миграции (например, `ecda7d78a38f`) |
 
-### 2.6 Диаграмма связей (ER)
+### 2.5 Диаграмма связей (ER)
 
 ```
 ┌─────────────────┐       ┌──────────────────────┐
@@ -162,15 +142,6 @@ config.yaml                 granite/database.py              alembic/
                            │ segment              │
                            │ updated_at           │
                            └─────────────────────┘
-
-┌─────────────────┐
-│  pipeline_runs  │  ⚠️ DEPRECATED (не используется)
-├─────────────────┤
-│ id (PK)         │
-│ city            │
-│ stage           │
-│ status          │
-└─────────────────┘
 ```
 
 ## 3. SQLite: WAL-режим и оптимизации
@@ -404,7 +375,7 @@ python cli.py db current
 ## 8. Поток данных через таблицы
 
 ```
-Скреперы (jsprav, firecrawl, ...)
+Скреперы (jsprav, web_search, ...)
         │
         ▼
 ┌─────────────────┐     ┌───────────────────┐
@@ -416,7 +387,7 @@ python cli.py db current
                         ┌───────────────────────┐
                         │ enriched_companies     │  Фаза 3: Обогащение
                         │ (мессенджеры, CMS,    │  Сканирование сайтов,
-                        │  скоринг, сегмент)     │  поиск TG, Firecrawl
+                        │  скоринг, сегмент)     │  поиск TG, Web Search
                         └───────────────────────┘
                                   │
                                   ▼
@@ -488,7 +459,7 @@ session = db.get_session()
 try:
     # Новая сырая запись
     raw = RawCompanyRow(
-        source="firecrawl",
+        source="web_search",
         name="ГранитМастер",
         phones=["79001234567"],
         city="Волгоград",
@@ -522,7 +493,7 @@ db = Database()
 with db.session_scope() as session:
     # Новая сырая запись
     raw = RawCompanyRow(
-        source="firecrawl",
+        source="web_search",
         name="ГранитМастер",
         phones=["79001234567"],
         city="Волгоград",

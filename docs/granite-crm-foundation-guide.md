@@ -13,14 +13,12 @@
 | raw_companies | RawCompanyRow | Сырые записи от скраперов | source, source_url, name, phones, address_raw, website, emails, geo, messengers, city, merged_into |
 | companies | CompanyRow | Уникальные компании после дедуп | merged_from, name_best, phones, address, website, emails, city, messengers, status, segment |
 | enriched_companies | EnrichedCompanyRow | Обогащённые данные | messengers, tg_trust, cms, has_marquiz, is_network, crm_score, segment |
-| pipeline_runs | PipelineRunRow | Лог запусков пайплайна | city, stage, source, started_at, finished_at, records_found, records_errors, status |
 
 ### Связи (FK)
 
 ```
 raw_companies.merged_into → companies.id (ON DELETE SET NULL)
 enriched_companies.id → companies.id (ON DELETE CASCADE, PK=company_id)
-pipeline_runs — нет FK (standalone лог)
 ```
 
 ### SQLite-настройки (database.py)
@@ -33,7 +31,7 @@ pipeline_runs — нет FK (standalone лог)
 
 ### Проблемы текущей схемы
 
-1. **ORM ↔ Alembic drift** — pipeline_runs и merged_into в ORM, но не в Alembic-миграции
+1. **ORM ↔ Alembic drift** — merged_into в ORM, но не в Alembic-миграции
 2. **geo как String** — `"lat,lon"` вместо двух Float или JSON
 3. **messengers как JSON-dict** — нет схемы, нет валидации ключей
 4. **status как String** — нет enum, можно записать любой мусор
@@ -187,7 +185,7 @@ python cli.py run --city Астрахань  # completed без ошибок
 
 ### 3.1. Синхронизация ORM ↔ Alembic
 
-**Проблема:** ORM определяет `pipeline_runs` и `raw_companies.merged_into`, но Alembic-миграция их не содержит.
+**Проблема:** ORM определяет `raw_companies.merged_into`, но Alembic-миграция его не содержит.
 
 **Действие:**
 ```bash
