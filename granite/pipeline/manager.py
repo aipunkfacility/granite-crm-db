@@ -6,10 +6,11 @@
   - pipeline/region_resolver.py — RegionResolver (конфигурация городов)
   - pipeline/scraping_phase.py   — ScrapingPhase (скрапинг)
   - pipeline/dedup_phase.py      — DedupPhase (дедупликация)
-  - pipeline/enrichment_phase.py — EnrichmentPhase (обогащение + веб-поиск)
+  - pipeline/enrichment_phase.py — EnrichmentPhase (обогащение + веб-поиск, sync/async)
   - pipeline/scoring_phase.py    — ScoringPhase (скоринг + сегментация)
   - pipeline/export_phase.py     — ExportPhase (CSV + пресеты)
 """
+import asyncio
 from loguru import logger
 from granite.database import Database
 from granite.pipeline.checkpoint import CheckpointManager
@@ -115,7 +116,12 @@ class PipelineManager:
                 stage = "deduped"
 
             if stage == "deduped":
-                self._run_phase("обогащение", lambda: self.enrichment.run(city))
+                if self.enrichment._is_async_enabled():
+                    self._run_phase("обогащение (async)",
+                                   lambda: self.enrichment.run_async(city))
+                else:
+                    self._run_phase("обогащение",
+                                   lambda: self.enrichment.run(city))
 
         # Reverse lookup enrichment (между обогащением и детектором сетей)
         rl_config = self.config.get("enrichment", {}).get("reverse_lookup", {})
@@ -137,9 +143,16 @@ class PipelineManager:
     _CRITICAL_PHASES = frozenset({"скрапинг", "дедупликация"})
 
     def _run_phase(self, name: str, fn) -> None:
-        """Обёртка для фазы с обработкой ошибок. Критические фазы прерывают pipeline."""
+        """Обёртка для фазы с обработкой ошибок. Критические фазы прерывают pipeline.
+
+        Поддерживает как sync, так и async функции (detects coroutine functions
+        и запускает через asyncio.run).
+        """
         try:
-            fn()
+            if asyncio.iscoroutinefunction(fn):
+                asyncio.run(fn())
+            else:
+                fn()
         except Exception as e:
             logger.error(f"Ошибка фазы '{name}': {e}")
             print_status(f"[ОШИБКА] Фаза '{name}' завершена с ошибкой: {e}", "warning")

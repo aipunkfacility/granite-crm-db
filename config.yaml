@@ -391,6 +391,11 @@ enrichment:
   # Параллелизация: кол-во потоков для обогащения (1 = последовательно)
   max_concurrent: 3
 
+  # Async HTTP: включить async-режим обогащения (httpx.AsyncClient + asyncio)
+  # Если false — используется ThreadPoolExecutor (legacy sync)
+  # Если true — используется asyncio.Semaphore + httpx.AsyncClient (быстрее)
+  async_enabled: false
+
   # Батч: flush каждые N enriched-записей в enrichment_phase
   batch_flush: 50
 

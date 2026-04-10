@@ -3,6 +3,7 @@ import re
 from urllib.parse import urljoin, urlparse
 from loguru import logger
 from granite.utils import fetch_page, adaptive_delay, is_safe_url, extract_emails, extract_phones
+from granite.http_client import async_fetch_page, async_adaptive_delay
 
 
 class MessengerScanner:
@@ -245,3 +246,82 @@ class MessengerScanner:
         ):
             if "vk" not in result:
                 result["vk"] = m.group(1)
+
+    # ===== Async variants =====
+
+    async def scan_website_async(self, base_url: str) -> dict:
+        """Async версия scan_website — сканирование сайта через httpx.
+
+        Идентична по логике scan_website(), но использует async_fetch_page()
+        и async_adaptive_delay() для неблокирующего I/O.
+        Используется в EnrichmentPhase.run_async() для параллельного обогащения.
+
+        Returns:
+            dict с ключами: telegram, whatsapp, vk, _emails, _phones.
+        """
+        found: dict = {
+            "_emails": [],
+            "_phones": [],
+        }
+
+        if not base_url:
+            return found
+
+        base_url_clean = base_url.rstrip("/")
+
+        if not is_safe_url(base_url_clean):
+            return found
+
+        html = None
+
+        # 1. Сканируем главную страницу
+        try:
+            html = await async_fetch_page(base_url_clean + "/", timeout=10)
+            if html:
+                self._extract_social_links(html, found)
+                self._extract_emails(html, found)
+                self._extract_phones(html, found)
+        except Exception as e:
+            logger.debug(f"MessengerScanner scan_website_async main page error: {e}")
+
+        # 2. Ищем ссылки на странице контактов
+        try:
+            await async_adaptive_delay()
+            contacts_url = self._find_contacts_link(base_url_clean, html)
+            if contacts_url:
+                if not is_safe_url(contacts_url):
+                    contacts_url = None
+                    chtml = None
+                else:
+                    chtml = await async_fetch_page(contacts_url, timeout=10)
+                if chtml:
+                    self._extract_social_links(chtml, found)
+                    self._extract_emails(chtml, found)
+                    self._extract_phones(chtml, found)
+                    # На странице контактов ищем ссылки на другие страницы
+                    extra_links = self._find_relevant_links(chtml, base_url_clean)
+                    for link in extra_links:
+                        if link == contacts_url:
+                            continue
+                        if (
+                            "telegram" in found
+                            and "whatsapp" in found
+                            and found.get("_emails")
+                        ):
+                            break
+                        if not is_safe_url(link):
+                            continue
+                        try:
+                            await async_adaptive_delay()
+                            ehtml = await async_fetch_page(link, timeout=10)
+                            if ehtml:
+                                self._extract_social_links(ehtml, found)
+                                self._extract_emails(ehtml, found)
+                                self._extract_phones(ehtml, found)
+                        except Exception as e:
+                            logger.debug(f"MessengerScanner extra page async error: {e}")
+                            continue
+        except Exception as e:
+            logger.debug(f"MessengerScanner contacts page async error: {e}")
+
+        return found

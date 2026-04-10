@@ -3,8 +3,13 @@
 
 Вынесено из PipelineManager — самая сложная фаза пайплайна,
 требующая отдельного тестирования и изоляции.
+
+Поддерживает два режима:
+- sync: ThreadPoolExecutor (legacy, max_concurrent > 1)
+- async: asyncio + httpx.AsyncClient (фаза 8, enrichment.async_enabled=true)
 """
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from loguru import logger
 from granite.database import Database, CompanyRow, EnrichedCompanyRow
@@ -42,7 +47,9 @@ def _classify_error(exc: Exception) -> str:
 from granite.enrichers.messenger_scanner import MessengerScanner
 from granite.enrichers.tech_extractor import TechExtractor
 from granite.enrichers.tg_finder import find_tg_by_phone, find_tg_by_name
+from granite.enrichers.tg_finder import find_tg_by_phone_async, find_tg_by_name_async
 from granite.enrichers.tg_trust import check_tg_trust
+from granite.enrichers.tg_trust import check_tg_trust_async
 from granite.dedup.validator import validate_website
 
 
@@ -61,6 +68,10 @@ class EnrichmentPhase:
         self.web = web_client
         self._resolver = RegionResolver(config)
         self._error_counts: dict[str, int] = {}
+
+    def _is_async_enabled(self) -> bool:
+        """Проверить, включён ли async-режим обогащения."""
+        return self.config.get("enrichment", {}).get("async_enabled", False)
 
     def run(self, city: str, only_new: bool = False) -> int:
         """Основной проход обогащения для города.
@@ -116,6 +127,233 @@ class EnrichmentPhase:
             )
 
             return count
+
+    async def run_async(self, city: str, only_new: bool = False) -> int:
+        """Async версия run() — обогащение через asyncio + httpx.AsyncClient.
+
+        Использует asyncio.Semaphore для ограничения параллелизма и
+        asyncio.gather для одновременного обогащения компаний.
+        БД остаётся sync — запись через session_scope на главном потоке.
+
+        Returns:
+            Количество обогащённых компаний.
+        """
+        print_status("ФАЗА 3: Обогащение данных (async/httpx)", "info")
+
+        self._error_counts = {}
+
+        # Загружаем компании из БД (sync, внутри контекстного менеджера)
+        with self.db.session_scope() as session:
+            if only_new:
+                enriched_ids = session.query(EnrichedCompanyRow.id).filter_by(city=city).subquery()
+                companies = session.query(CompanyRow).filter(
+                    CompanyRow.city == city, CompanyRow.id.notin_(enriched_ids)
+                ).all()
+
+                enriched_count = session.query(EnrichedCompanyRow.id).filter_by(city=city).count()
+
+                if not companies:
+                    print_status("Нет новых компаний для обогащения", "info")
+                    return 0
+                print_status(
+                    f"Новых компаний: {len(companies)} (всего enriched: {enriched_count})",
+                    "info",
+                )
+            else:
+                companies = session.query(CompanyRow).filter_by(city=city).all()
+
+            # Конфигурация параллелизма
+            batch_flush = self.config.get("enrichment", {}).get("batch_flush", 50)
+            max_concurrent = self.config.get("enrichment", {}).get("max_concurrent", 3)
+
+            scanner = MessengerScanner(self.config)
+            tech_ext = TechExtractor(self.config)
+
+            # Создаём копии companies с загруженными атрибутами
+            # (для безопасного доступа из async задач)
+            company_snapshots = [
+                {
+                    "id": c.id,
+                    "name_best": c.name_best,
+                    "phones": list(c.phones) if c.phones else [],
+                    "address": c.address,
+                    "website": c.website,
+                    "emails": list(c.emails) if c.emails else [],
+                    "city": c.city,
+                    "messengers": dict(c.messengers) if c.messengers else {},
+                }
+                for c in companies
+            ]
+
+        # Async обогащение (вне сессии — БД не нужна для HTTP)
+        if max_concurrent <= 1 or len(company_snapshots) <= 1:
+            results = await self._enrich_companies_async_sequential(
+                company_snapshots, scanner, tech_ext
+            )
+        else:
+            results = await self._enrich_companies_async_parallel(
+                company_snapshots, scanner, tech_ext, max_concurrent
+            )
+
+        # Запись результатов в БД (sync)
+        count = 0
+        with self.db.session_scope() as session:
+            for item in results:
+                if item is None:  # ошибка обогащения
+                    continue
+                erow = item
+                session.merge(erow)
+                if count % batch_flush == batch_flush - 1:
+                    session.flush()
+                count += 1
+
+                # Логирование
+                name = erow.name or "?"
+                self._print_enriched_status(name, erow, count, len(results))
+
+            session.flush()
+
+        print_status(f"Обогащение (async) завершено для {count} компаний", "success")
+
+        if self._error_counts:
+            parts = [f"{cat}: {cnt}" for cat, cnt in sorted(self._error_counts.items())]
+            logger.warning(f"Ошибки обогащения — {', '.join(parts)}")
+        else:
+            logger.info("Обогащение прошло без ошибок")
+
+        return count
+
+    async def _enrich_one_company_async(self, snapshot: dict, scanner, tech_ext) -> 'EnrichedCompanyRow':
+        """Async обогащение одной компании.
+
+        Использует async-версии всех HTTP-запросов:
+        - scanner.scan_website_async()
+        - find_tg_by_phone_async() / find_tg_by_name_async()
+        - check_tg_trust_async()
+        - tech_ext.extract_async()
+
+        Args:
+            snapshot: dict с загруженными атрибутами CompanyRow.
+
+        Returns:
+            EnrichedCompanyRow или None при ошибке.
+        """
+        erow = EnrichedCompanyRow(
+            id=snapshot["id"],
+            name=snapshot["name_best"],
+            phones=snapshot["phones"],
+            address_raw=snapshot["address"],
+            website=snapshot["website"],
+            emails=snapshot["emails"],
+            city=snapshot["city"],
+        )
+
+        messengers = dict(snapshot["messengers"])
+
+        # 1. Сканирование сайта (async)
+        if snapshot["website"]:
+            valid_url, status = validate_website(snapshot["website"])
+            erow.website = valid_url
+            if valid_url and status == 200:
+                site_data = await scanner.scan_website_async(valid_url)
+                for k, v in site_data.items():
+                    if not k.startswith("_") and k not in messengers:
+                        messengers[k] = v
+
+                site_emails = site_data.get("_emails", [])
+                if site_emails:
+                    existing_emails = set(erow.emails or [])
+                    for em in site_emails:
+                        existing_emails.add(em)
+                    erow.emails = list(existing_emails)
+
+                site_phones = site_data.get("_phones", [])
+                if site_phones:
+                    erow.phones = normalize_phones(
+                        (erow.phones or []) + site_phones
+                    )
+
+                tech = await tech_ext.extract_async(valid_url)
+                erow.cms = tech.get("cms", "unknown")
+                erow.has_marquiz = tech.get("has_marquiz", False)
+
+        # 2. Поиск Telegram (async)
+        if "telegram" not in messengers:
+            phones = snapshot["phones"]
+            if phones:
+                tg = await find_tg_by_phone_async(phones[0], self.config)
+                if tg:
+                    messengers["telegram"] = tg
+
+            if "telegram" not in messengers:
+                tg = await find_tg_by_name_async(
+                    snapshot["name_best"],
+                    phones[0] if phones else None,
+                    self.config,
+                )
+                if tg:
+                    messengers["telegram"] = tg
+
+        # 3. Анализ Telegram — Траст (async)
+        tg_trust = {}
+        if "telegram" in messengers:
+            tg_trust = await check_tg_trust_async(messengers["telegram"], self.config)
+
+        erow.messengers = messengers
+        erow.tg_trust = tg_trust
+
+        return erow
+
+    async def _enrich_companies_async_sequential(self, snapshots, scanner, tech_ext) -> list:
+        """Последовательное async обогащение (max_concurrent <= 1)."""
+        results = []
+        for snap in snapshots:
+            try:
+                erow = await self._enrich_one_company_async(snap, scanner, tech_ext)
+                results.append(erow)
+            except Exception as e:
+                category = _classify_error(e)
+                logger.exception(
+                    f"[{category}] Async ошибка обогащения {snap.get('name_best', '?')}: {e}"
+                )
+                self._error_counts[category] = self._error_counts.get(category, 0) + 1
+                results.append(None)
+        return results
+
+    async def _enrich_companies_async_parallel(self, snapshots, scanner, tech_ext,
+                                                max_concurrent) -> list:
+        """Параллельное async обогащение через asyncio.Semaphore.
+
+        Semaphore ограничивает количество одновременных HTTP-запросов.
+        asyncio.gather запускает все задачи параллельно, но semaphore
+        блокирует超额ные до освобождения слота.
+        """
+        sem = asyncio.Semaphore(max_concurrent)
+        print_status(
+            f"Async обогащение: {len(snapshots)} компаний, {max_concurrent} параллельных",
+            "info",
+        )
+
+        async def _enrich_with_sem(snap):
+            async with sem:
+                return await self._enrich_one_company_async(snap, scanner, tech_ext)
+
+        tasks = [_enrich_with_sem(snap) for snap in snapshots]
+        raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        results = []
+        for snap, result in zip(snapshots, raw_results):
+            if isinstance(result, Exception):
+                category = _classify_error(result)
+                logger.exception(
+                    f"[{category}] Async ошибка обогащения {snap.get('name_best', '?')}: {result}"
+                )
+                self._error_counts[category] = self._error_counts.get(category, 0) + 1
+                results.append(None)
+            else:
+                results.append(result)
+
+        return results
 
     def run_deep_enrich_existing(self, city: str) -> int:
         """Точечный поиск для уже обогащённых компаний (--re-enrich).
@@ -280,7 +518,7 @@ class EnrichmentPhase:
                 logger.exception(
                     f"[{category}] Ошибка обогащения {c.name_best}: {e}"
                 )
-                self._error_counts[category] += 1
+                self._error_counts[category] = self._error_counts.get(category, 0) + 1
 
         session.flush()
         return count
@@ -318,7 +556,7 @@ class EnrichmentPhase:
                     logger.exception(
                         f"[{category}] Ошибка обогащения {c.name_best}: {e}"
                     )
-                    self._error_counts[category] += 1
+                    self._error_counts[category] = self._error_counts.get(category, 0) + 1
 
         session.flush()
         return count
@@ -428,7 +666,7 @@ class EnrichmentPhase:
                     f"[{category}] Ошибка deep enrich для "
                     f"{getattr(record, name_attr, '?')}: {e}"
                 )
-                self._error_counts[category] += 1
+                self._error_counts[category] = self._error_counts.get(category, 0) + 1
 
         print_status(
             f"Точечный поиск: дополнено {found}/{len(needs_deep)} компаний", "success"
