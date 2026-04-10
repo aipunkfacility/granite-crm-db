@@ -43,14 +43,19 @@ _search_lock = threading.Lock()
 # ── Кэш недоступных доменов (таймаут/403) — не ретраить в рамках сессии ──
 _FAILED_DOMAINS: dict[str, float] = {}  # domain -> timestamp
 _FAILED_DOMAINS_LOCK = threading.Lock()
-_FAILED_DOMAINS_TTL = 600  # 10 минут
+_FAILED_DOMAINS_TTL_DEFAULT = 600  # 10 минут
 
 
-def _is_domain_failed(domain: str) -> bool:
+def _get_failed_domain_ttl(config: dict) -> int:
+    """Извлечь TTL кэша недоступных доменов из конфига."""
+    return config.get("scraping", {}).get("failed_domain_cache_ttl", _FAILED_DOMAINS_TTL_DEFAULT)
+
+
+def _is_domain_failed(domain: str, ttl: int = _FAILED_DOMAINS_TTL_DEFAULT) -> bool:
     """Проверить, был ли домен недавно недоступен."""
     with _FAILED_DOMAINS_LOCK:
         ts = _FAILED_DOMAINS.get(domain)
-        if ts and (time.time() - ts) < _FAILED_DOMAINS_TTL:
+        if ts and (time.time() - ts) < ttl:
             return True
         return False
 
@@ -309,6 +314,7 @@ class WebSearchScraper(BaseScraper):
         self.source_config = config.get("sources", {}).get("web_search", {})
         self.queries = self.source_config.get("queries", [])
         self.search_limit = self.source_config.get("search_limit", 10)
+        self._failed_domain_ttl = _get_failed_domain_ttl(config)
         # HTTP сессия для Yandex / Bing
         self._session = requests.Session()
         self._session.headers.update(
@@ -673,7 +679,7 @@ class WebSearchScraper(BaseScraper):
             return None
 
         domain = extract_domain(url)
-        if domain and _is_domain_failed(domain):
+        if domain and _is_domain_failed(domain, self._failed_domain_ttl):
             logger.debug(f"  WebSearch: пропуск {domain} (ранее недоступен)")
             return None
 

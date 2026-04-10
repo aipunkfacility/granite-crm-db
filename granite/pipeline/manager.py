@@ -36,7 +36,11 @@ class PipelineManager:
         self.checkpoints = CheckpointManager(db)
 
         self.region = RegionResolver(config)
-        wc_config = config.get("sources", {}).get("web_search", {})
+
+        # WebClient config: enrichment.web_client (новая секция) с fallback на sources.web_search
+        wc_config = config.get("enrichment", {}).get("web_client", {})
+        if not wc_config:
+            wc_config = config.get("sources", {}).get("web_search", {})
         self.web = WebClient(
             timeout=wc_config.get("timeout", 60),
             search_limit=wc_config.get("search_limit", 3),

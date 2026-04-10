@@ -300,7 +300,6 @@ cities:
 
 # ===== Общие настройки скрапинга =====
 scraping:
-  # ⚠️ These values are NOT yet used by all scrapers. Some have hardcoded timeouts.
   request_delay: 1.5
   timeout: 15
   max_retries: 3
@@ -308,6 +307,7 @@ scraping:
   retry_max_wait: 30
   user_agent_rotation: true
   max_threads: 3
+  failed_domain_cache_ttl: 600  # секунд — кэш недоступных доменов в web_search
 
 # ===== Настройки источников =====
 sources:
@@ -375,22 +375,30 @@ dedup:
 
 # ===== Обогащение =====
 enrichment:
-  messenger_pages:
-    - "/"
-    - "/contacts"
-    - "/kontakty"
-    - "/about"
-    - "/o-nas"
-    - "/katalog"
-    - "/produkciya"
+  # WebClient: используется для точечного веб-поиска в enrichment_phase
+  web_client:
+    timeout: 60
+    search_limit: 3
 
+  # Батч: flush каждые N enriched-записей в enrichment_phase
+  batch_flush: 50
+
+  # Network detector: порог для определения сети филиалов
+  network_threshold: 2
+
+  # Telegram: общие настройки
   tg_finder:
     check_delay: 1.5
+    max_retries: 5
+    initial_backoff: 5  # секунд — начальная выдержка при 429
+    request_timeout: 10  # секунд
     google_search_enabled: true
     website_check_enabled: true
 
   tg_trust:
     empty_profile_penalty: -5
+    check_delay_min: 1.0  # adaptive_delay min для check_tg_trust
+    check_delay_max: 2.0
 
   tech_keywords:
     equipment:

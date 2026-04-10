@@ -5,10 +5,12 @@ import random
 from granite.utils import adaptive_delay, TRANSLIT_MAP, get_random_ua, normalize_phone, is_safe_url, _sanitize_url_for_log
 import requests
 from loguru import logger
-from granite.enrichers._tg_common import TG_MAX_RETRIES, TG_INITIAL_BACKOFF
+from granite.enrichers._tg_common import TG_MAX_RETRIES, TG_INITIAL_BACKOFF, get_tg_config
 
 
-def tg_request(url: str, headers: dict, timeout: int = 10) -> requests.Response | None:
+def tg_request(url: str, headers: dict, timeout: int = 10,
+               max_retries: int = TG_MAX_RETRIES,
+               initial_backoff: int = TG_INITIAL_BACKOFF) -> requests.Response | None:
     """HTTP GET с экспоненциальной выдержкой при HTTP 429 (Too Many Requests).
 
     Telegram блокирует IP при агрессивном парсинге. При получении 429 ждём
@@ -17,15 +19,15 @@ def tg_request(url: str, headers: dict, timeout: int = 10) -> requests.Response 
     """
     if not is_safe_url(url):
         return None
-    backoff = TG_INITIAL_BACKOFF
-    for attempt in range(TG_MAX_RETRIES):
+    backoff = initial_backoff
+    for attempt in range(max_retries):
         try:
             r = requests.get(url, headers=headers, timeout=timeout)
             if r.status_code == 429:
                 wait = backoff + random.uniform(0, 2)
                 logger.warning(
                     f"TG rate limit (429) для {_sanitize_url_for_log(url, 60)}, "
-                    f"повтор через {wait:.0f}с (попытка {attempt + 1}/{TG_MAX_RETRIES})"
+                    f"повтор через {wait:.0f}с (попытка {attempt + 1}/{max_retries})"
                 )
                 time.sleep(wait)
                 backoff *= 2
@@ -34,7 +36,7 @@ def tg_request(url: str, headers: dict, timeout: int = 10) -> requests.Response 
         except requests.RequestException as e:
             logger.warning(f"TG request error ({_sanitize_url_for_log(url, 60)}): {e}")
             return None
-    logger.warning(f"TG: исчерпано {TG_MAX_RETRIES} попыток для {_sanitize_url_for_log(url, 60)} — пропуск")
+    logger.warning(f"TG: исчерпано {max_retries} попыток для {_sanitize_url_for_log(url, 60)} — пропуск")
     return None
 
 
@@ -58,19 +60,18 @@ def find_tg_by_phone(phone: str, config: dict) -> str | None:
     if not norm_phone or len(norm_phone) != 11:
         return None
 
-    enrich_config = config.get("enrichment", {})
-    tg_config = enrich_config.get("tg_finder", {})
-    tg_delay = tg_config.get("check_delay", 1.5)
-
+    tg_cfg = get_tg_config(config)
     headers = {"User-Agent": get_random_ua()}
     url = f"https://t.me/+{norm_phone}"
 
-    r = tg_request(url, headers)
+    r = tg_request(url, headers, timeout=tg_cfg["request_timeout"],
+                   max_retries=tg_cfg["max_retries"],
+                   initial_backoff=tg_cfg["initial_backoff"])
     if r:
         has_button = "tgme_action_button_new" in r.text
         has_contact_title = "Telegram: Contact" in r.text
         if has_button or has_contact_title:
-            adaptive_delay(tg_delay, tg_delay + 1.0)
+            adaptive_delay(tg_cfg["check_delay"], tg_cfg["check_delay"] + 1.0)
             return url
     return None
 
@@ -111,16 +112,17 @@ def find_tg_by_name(name: str, phone: str, config: dict) -> str | None:
     """Генерация и проверка юзернеймов."""
     if not name:
         return None
-    enrich_config = config.get("enrichment", {})
-    tg_config = enrich_config.get("tg_finder", {})
-    tg_delay = tg_config.get("check_delay", 1.5)
 
+    tg_cfg = get_tg_config(config)
     variants = generate_usernames(name, phone)
     headers = {"User-Agent": get_random_ua()}
 
     for v in variants:
-        adaptive_delay(tg_delay, tg_delay + 0.5)
-        r = tg_request(f"https://t.me/{v}", headers)
+        adaptive_delay(tg_cfg["check_delay"], tg_cfg["check_delay"] + 0.5)
+        r = tg_request(f"https://t.me/{v}", headers,
+                       timeout=tg_cfg["request_timeout"],
+                       max_retries=tg_cfg["max_retries"],
+                       initial_backoff=tg_cfg["initial_backoff"])
         if r and "tgme_page_title" in r.text:
             m1 = re.search(r"tgme_page_description[^>]*>([^<]+)", r.text)
             desc = m1.group(1).lower() if m1 else ""

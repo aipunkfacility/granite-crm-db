@@ -133,6 +133,7 @@ class EnrichmentPhase:
         финальный commit делает session_scope при успешном выходе.
         """
         count = 0
+        batch_flush = self.config.get("enrichment", {}).get("batch_flush", 50)
         for c in companies:
             try:
                 erow = EnrichedCompanyRow(
@@ -194,13 +195,13 @@ class EnrichmentPhase:
                 # 3. Анализ Telegram (Траст)
                 tg_trust = {}
                 if "telegram" in messengers:
-                    tg_trust = check_tg_trust(messengers["telegram"])
+                    tg_trust = check_tg_trust(messengers["telegram"], self.config)
 
                 erow.messengers = messengers
                 erow.tg_trust = tg_trust
 
                 session.merge(erow)
-                if count % 50 == 49:
+                if count % batch_flush == batch_flush - 1:
                     session.flush()
                 count += 1
 
