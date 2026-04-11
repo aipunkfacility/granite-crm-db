@@ -186,15 +186,8 @@ class TestDatabaseAutoMigrate:
 class TestSchemaCheck:
     """Проверка обнаружения различий между ORM и БД."""
 
-    # CRM-таблицы добавлены в ORM (Фаза 1), но миграция для них — в Фазе 2.
-    # До Фазы 2 эти таблицы считаются ожидаемым diff.
-    _CRM_TABLES = {
-        "crm_contacts", "crm_touches", "crm_templates",
-        "crm_email_logs", "crm_tasks", "crm_email_campaigns",
-    }
-
     def test_no_diff_after_upgrade(self, alembic_config, db_url):
-        """После upgrade head нет различий между ORM и БД (кроме CRM-таблиц, миграция в Фазе 2)."""
+        """После upgrade head нет различий между ORM и БД."""
         from alembic import command
         from alembic.autogenerate import compare_metadata
         from alembic.migration import MigrationContext
@@ -209,24 +202,7 @@ class TestSchemaCheck:
             ctx = MigrationContext.configure(conn)
             diff = compare_metadata(ctx, Base.metadata)
 
-        # Фильтруем diff: оставляем только non-CRM различия
-        non_crm_diff = [
-            item for item in diff
-            if not (
-                len(item) >= 2
-                and item[0] == "add_table"
-                and hasattr(item[1], "name")
-                and item[1].name in self._CRM_TABLES
-            )
-            and not (
-                len(item) >= 2
-                and item[0] == "add_index"
-                and hasattr(item[1], "table")
-                and hasattr(item[1].table, "name")
-                and item[1].table.name in self._CRM_TABLES
-            )
-        ]
-        assert non_crm_diff == [], f"Unexpected diff after upgrade: {non_crm_diff}"
+        assert diff == [], f"Unexpected diff after upgrade: {diff}"
 
 
 class TestForeignKeys:
