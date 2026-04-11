@@ -119,6 +119,205 @@ class EnrichedCompanyRow(Base):
         return f"<{self.__class__.__name__}(id={self.id}, name={self.name!r})>"
 
 
+# Допустимые стадии воронки — используется для валидации в API и future CHECK constraint
+VALID_STAGES = {
+    "new", "email_sent", "email_opened", "tg_sent", "wa_sent",
+    "replied", "interested", "not_interested", "unreachable",
+}
+
+
+class CrmContactRow(Base):
+    """Главная CRM-запись для компании. Создаётся SEED-скриптом для всех companies."""
+    __tablename__ = "crm_contacts"
+
+    company_id = Column(
+        Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True
+    )
+
+    funnel_stage = Column(String, default="new", server_default="new", index=True)
+
+    # Email метрики
+    email_sent_count = Column(Integer, default=0, server_default="0")
+    email_opened_count = Column(Integer, default=0, server_default="0")
+    email_replied_count = Column(Integer, default=0, server_default="0")
+    last_email_sent_at = Column(DateTime, nullable=True)
+    last_email_opened_at = Column(DateTime, nullable=True)
+
+    # Мессенджер метрики
+    tg_sent_count = Column(Integer, default=0, server_default="0")
+    wa_sent_count = Column(Integer, default=0, server_default="0")
+    last_tg_at = Column(DateTime, nullable=True)
+    last_wa_at = Column(DateTime, nullable=True)
+
+    # Общая статистика касаний
+    contact_count = Column(Integer, default=0, server_default="0")
+    last_contact_at = Column(DateTime, nullable=True, index=True)
+    last_contact_channel = Column(String, default="", server_default="")
+    first_contact_at = Column(DateTime, nullable=True)
+
+    # Ручные поля
+    notes = Column(Text, default="")
+    stop_automation = Column(Integer, default=0, server_default="0", index=True)
+
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    def __repr__(self):
+        return f"<CrmContactRow(company_id={self.company_id}, stage={self.funnel_stage!r})>"
+
+
+class CrmTouchRow(Base):
+    """Лог касаний: каждое отправленное/полученное сообщение."""
+    __tablename__ = "crm_touches"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    company_id = Column(
+        Integer, ForeignKey("companies.id", ondelete="CASCADE"),
+        nullable=False, index=True
+    )
+
+    channel = Column(String, nullable=False)    # email / tg / wa / manual
+    direction = Column(String, nullable=False)  # outgoing / incoming
+
+    subject = Column(String, default="")
+    body = Column(Text, default="")
+    note = Column(Text, default="")
+
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    def __repr__(self):
+        return f"<CrmTouchRow(id={self.id}, channel={self.channel!r}, dir={self.direction!r})>"
+
+
+class CrmTemplateRow(Base):
+    """Шаблоны сообщений с плейсхолдерами {from_name}, {city}, {company_name}."""
+    __tablename__ = "crm_templates"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String, nullable=False, unique=True)
+    channel = Column(String, nullable=False)
+    subject = Column(String, default="")
+    body = Column(Text, nullable=False)
+    description = Column(String, default="")
+
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    def render(self, **kwargs) -> str:
+        """Подставить значения в плейсхолдеры шаблона.
+
+        Безопасность: используется str.replace() (литеральная подстановка подстроки),
+        НЕ str.format() или eval(). Инъекция невозможна.
+        """
+        result = self.body
+        for key, value in kwargs.items():
+            result = result.replace(f"{{{key}}}", str(value))
+        return result
+
+    def render_subject(self, **kwargs) -> str:
+        """Подставить значения в тему письма."""
+        if not self.subject:
+            return self.subject
+        result = self.subject
+        for key, value in kwargs.items():
+            result = result.replace(f"{{{key}}}", str(value))
+        return result
+
+    def __repr__(self):
+        return f"<CrmTemplateRow(name={self.name!r}, channel={self.channel!r})>"
+
+
+class CrmEmailLogRow(Base):
+    """Запись об отправленном письме с UUID для tracking pixel."""
+    __tablename__ = "crm_email_logs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    company_id = Column(
+        Integer, ForeignKey("companies.id", ondelete="CASCADE"),
+        nullable=False, index=True
+    )
+
+    email_to = Column(String, nullable=False)
+    email_subject = Column(String, default="")
+    template_name = Column(String, default="")
+    campaign_id = Column(Integer, nullable=True, index=True)
+
+    status = Column(String, default="pending")
+
+    sent_at = Column(DateTime, nullable=True)
+    opened_at = Column(DateTime, nullable=True)
+    replied_at = Column(DateTime, nullable=True)
+    bounced_at = Column(DateTime, nullable=True)
+    error_message = Column(Text, default="")
+
+    tracking_id = Column(String, unique=True, nullable=True, index=True)
+
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    def __repr__(self):
+        return f"<CrmEmailLogRow(id={self.id}, to={self.email_to!r}, status={self.status!r})>"
+
+
+class CrmTaskRow(Base):
+    """Задачи: follow-up, отправка портфолио, звонок и т.д."""
+    __tablename__ = "crm_tasks"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    company_id = Column(
+        Integer, ForeignKey("companies.id", ondelete="SET NULL"),
+        nullable=True, index=True
+    )
+
+    title = Column(String, nullable=False)
+    description = Column(Text, default="")
+    due_date = Column(DateTime, nullable=True)
+    priority = Column(String, default="normal")
+    status = Column(String, default="pending", index=True)
+    task_type = Column(String, default="follow_up")
+
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    completed_at = Column(DateTime, nullable=True)
+
+    def __repr__(self):
+        return f"<CrmTaskRow(id={self.id}, title={self.title!r}, status={self.status!r})>"
+
+
+class CrmEmailCampaignRow(Base):
+    """Email-кампания: набор получателей + шаблон."""
+    __tablename__ = "crm_email_campaigns"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String, nullable=False)
+    template_name = Column(String, nullable=False)
+    status = Column(String, default="draft", index=True)
+
+    filters = Column(Text, default="{}")
+
+    total_sent = Column(Integer, default=0)
+    total_opened = Column(Integer, default=0)
+    total_replied = Column(Integer, default=0)
+
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    def __repr__(self):
+        return f"<CrmEmailCampaignRow(id={self.id}, name={self.name!r}, status={self.status!r})>"
+
+
+__all__ = [
+    "Base", "Database",
+    "RawCompanyRow", "CompanyRow", "EnrichedCompanyRow",
+    "CrmContactRow", "CrmTouchRow", "CrmTemplateRow",
+    "CrmEmailLogRow", "CrmTaskRow", "CrmEmailCampaignRow",
+    "VALID_STAGES",
+]
+
+
 # ===== Синглтон для доступа к БД =====
 
 
