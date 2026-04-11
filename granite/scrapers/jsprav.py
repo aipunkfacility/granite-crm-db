@@ -1,5 +1,6 @@
 # scrapers/jsprav.py — рефакторинг scripts/scrape_fast.py (JSON-LD, быстрая версия)
 import re
+import base64
 import requests
 import json
 import time
@@ -7,7 +8,7 @@ from urllib.parse import urlparse, urlunparse
 from bs4 import BeautifulSoup
 from granite.scrapers.base import BaseScraper
 from granite.models import RawCompany, Source
-from granite.utils import normalize_phone, normalize_phones, extract_domain, slugify, get_random_ua, adaptive_delay, _sanitize_url_for_log
+from granite.utils import normalize_phone, normalize_phones, extract_domain, extract_emails, slugify, get_random_ua, adaptive_delay, _sanitize_url_for_log
 from loguru import logger
 
 JSPRAV_CATEGORY = "izgotovlenie-i-ustanovka-pamyatnikov-i-nadgrobij"
@@ -162,16 +163,24 @@ class JspravScraper(BaseScraper):
                         except (ValueError, TypeError):
                             pass
 
+                    # ── Email ──
+                    # JSON-LD может содержать поле "email"
+                    item_emails = c.get("email", [])
+                    if isinstance(item_emails, str):
+                        item_emails = [item_emails]
+                    elif not isinstance(item_emails, list):
+                        item_emails = []
+
                     companies.append(
                         RawCompany(
                             source=Source.JSPRAV,
-                            source_url="",
+                            source_url=org_url,  # URL detail-страницы компании
                             name=name,
                             phones=phones,
                             address_raw=f"{addr.get('streetAddress', '')}, "
                             f"{addr.get('addressLocality', '')}".strip(", "),
                             website=website,
-                            emails=[],
+                            emails=item_emails,
                             city=self.city,
                             geo=geo,
                         )
@@ -262,8 +271,7 @@ class JspravScraper(BaseScraper):
                             )
 
                     page_companies = self._parse_companies_from_soup(soup, seen_urls)
-                    for c in page_companies:
-                        c.source_url = url
+                    # source_url уже заполнен URL detail-страницы в _parse_companies_from_soup
                     companies.extend(page_companies)
                     logger.info(
                         f"  JSprav: +{len(page_companies)} компаний (всего {len(companies)})"
@@ -324,5 +332,138 @@ class JspravScraper(BaseScraper):
                 # (jsprav может скрывать summary на некоторых городах)
                 self._needs_playwright = True
 
+        # ═══════════════════════════════════════════════════════════════
+        #  Второй проход: enrichment detail-страниц — мессенджеры, сайт, email
+        # ═══════════════════════════════════════════════════════════════
+        companies = self._enrich_from_detail_pages(companies)
+
         logger.info(f"  JSprav: итого {len(companies)} компаний для {self.city}")
         return companies
+
+    def _enrich_from_detail_pages(self, companies: list[RawCompany]) -> list[RawCompany]:
+        """Второй проход: обходит detail-страницы компаний и извлекает
+        мессенджеры (TG, VK, WA, Viber), сайт и email из base64 data-link.
+        """
+        # Карта detail URL → company для быстрого поиска
+        url_to_company: dict[str, RawCompany] = {}
+        for c in companies:
+            if c.source_url and c.source_url.startswith("http"):
+                url_to_company[c.source_url] = c
+
+        if not url_to_company:
+            logger.debug("  JSprav: нет detail URL для enrichment — пропуск")
+            return companies
+
+        total = len(url_to_company)
+        enriched = 0
+        logger.info(f"  JSprav: enrichment {total} detail-страниц...")
+
+        for i, (detail_url, company) in enumerate(url_to_company.items()):
+            if i > 0 and i % 50 == 0:
+                logger.info(
+                    f"  JSprav: enrichment {i}/{total} "
+                    f"(messengers: {enriched})"
+                )
+
+            try:
+                detail = self._fetch_detail_page(detail_url)
+                if detail["messengers"]:
+                    company.messengers = detail["messengers"]
+                    enriched += 1
+                if detail["website"] and not company.website:
+                    company.website = detail["website"]
+                if detail["emails"] and not company.emails:
+                    company.emails = detail["emails"]
+                if detail["phones"] and not company.phones:
+                    company.phones = detail["phones"]
+            except Exception as e:
+                logger.debug(f"  JSprav: enrichment error for {detail_url}: {e}")
+
+            # Задержка между запросами к detail-страницам
+            if i < total - 1:
+                adaptive_delay(0.3, 0.7)
+
+        logger.info(
+            f"  JSprav: enrichment завершён — {enriched}/{total} "
+            f"с мессенджерами"
+        )
+        return companies
+
+    def _fetch_detail_page(self, detail_url: str) -> dict:
+        """Загружает detail-страницу компании и извлекает:
+        - messengers из base64 data-link (TG, VK, WA, Viber)
+        - website из base64 data-link (org-link)
+        - phones из data-props JSON
+        - emails из HTML regex
+        """
+        result = {
+            "messengers": {},
+            "website": None,
+            "emails": [],
+            "phones": [],
+        }
+
+        r = None
+        for attempt in range(3):
+            try:
+                r = requests.get(
+                    detail_url,
+                    timeout=20,
+                    headers={"User-Agent": get_random_ua()},
+                )
+                if r.status_code == 200:
+                    break
+                elif r.status_code in (403, 404):
+                    return result
+            except (requests.Timeout, requests.ConnectionError):
+                time.sleep(2)
+
+        if r is None or r.status_code != 200:
+            return result
+
+        soup = BeautifulSoup(r.text, "html.parser")
+
+        # ── Мессенджеры и сайт из base64 data-link ──
+        for a in soup.find_all("a", attrs={"data-link": True}):
+            try:
+                decoded = base64.b64decode(a["data-link"]).decode("utf-8")
+                dtype = a.get("data-type", "")
+                if dtype == "org-link":
+                    result["website"] = decoded
+                elif dtype == "org-social-link":
+                    self._classify_messenger(decoded, result["messengers"])
+            except Exception:
+                pass
+
+        # ── Полные телефоны из data-props JSON ──
+        for el in soup.find_all(attrs={"data-props": True}):
+            try:
+                props = json.loads(el.get("data-props", "{}"))
+                if "phones" in props:
+                    result["phones"] = normalize_phones(props["phones"])
+            except Exception:
+                pass
+
+        # ── Email из HTML (бонус — jsprav обычно не показывает email) ──
+        result["emails"] = extract_emails(r.text)
+
+        return result
+
+    @staticmethod
+    def _classify_messenger(url: str, messengers: dict) -> None:
+        """Классифицирует URL мессенджера и добавляет в dict."""
+        url_lower = url.lower()
+        if "t.me" in url_lower:
+            messengers["telegram"] = url
+        elif "vk.com" in url_lower or "vkontakte" in url_lower:
+            messengers["vk"] = url
+        elif "viber" in url_lower:
+            messengers["viber"] = url
+        elif "wa.me" in url_lower or "whatsapp" in url_lower:
+            messengers["whatsapp"] = url
+        elif "ok.ru" in url_lower:
+            messengers["odnoklassniki"] = url
+        elif "youtube" in url_lower or "youtu.be" in url_lower:
+            pass  # YouTube — не мессенджер, пропускаем
+        elif "instagram" in url_lower:
+            messengers["instagram"] = url

@@ -3,6 +3,7 @@
 #   - "click_more": быстрый — кликает «Показать ещё», собирает JSON-LD со всех страниц
 #   - "deep": медленный — обходит каждую страницу компании для детальной информации
 import re
+import base64
 import json
 from granite.scrapers.base import BaseScraper
 from granite.models import RawCompany, Source
@@ -221,7 +222,7 @@ class JspravPlaywrightScraper(BaseScraper):
                     companies.append(
                         RawCompany(
                             source=Source.JSPRAV_PW,
-                            source_url="",
+                            source_url=org_url,  # URL detail-страницы компании
                             name=name,
                             phones=phones,
                             address_raw=f"{addr.get('streetAddress', '')}, "
@@ -235,7 +236,107 @@ class JspravPlaywrightScraper(BaseScraper):
             except (json.JSONDecodeError, KeyError, AttributeError):
                 continue
 
+        # ── Enrichment detail-страниц (мессенджеры из base64 data-link) ──
+        companies = self._enrich_from_detail_pages(companies)
+
         return companies
+
+    def _enrich_from_detail_pages(self, companies: list[RawCompany]) -> list[RawCompany]:
+        """Второй проход: обходит detail-страницы через Playwright и извлекает
+        мессенджеры (TG, VK, WA, Viber) и сайт из base64 data-link.
+        """
+        url_to_company: dict[str, RawCompany] = {}
+        for c in companies:
+            if c.source_url and c.source_url.startswith("http"):
+                url_to_company[c.source_url] = c
+
+        if not url_to_company:
+            return companies
+
+        total = len(url_to_company)
+        enriched = 0
+        logger.info(f"  JSprav PW: enrichment {total} detail-страниц...")
+
+        for i, (detail_url, company) in enumerate(url_to_company.items()):
+            if i > 0 and i % 50 == 0:
+                logger.info(
+                    f"  JSprav PW: enrichment {i}/{total} "
+                    f"(messengers: {enriched})"
+                )
+
+            try:
+                if not self.page:
+                    break
+                self.page.goto(detail_url, timeout=20000)
+                self.page.wait_for_load_state("domcontentloaded", timeout=15000)
+
+                page_content = self.page.content()
+                soup = self.page.query_selector("body")
+
+                # Мессенджеры и сайт из base64 data-link
+                messengers = {}
+                website = None
+                for a in self.page.query_selector_all("a[data-link]"):
+                    try:
+                        raw_b64 = a.get_attribute("data-link") or ""
+                        decoded = base64.b64decode(raw_b64).decode("utf-8")
+                        dtype = a.get_attribute("data-type") or ""
+                        if dtype == "org-link":
+                            website = decoded
+                        elif dtype == "org-social-link":
+                            self._classify_messenger(decoded, messengers)
+                    except Exception:
+                        pass
+
+                # Полные телефоны из data-props
+                for el in self.page.query_selector_all("[data-props]"):
+                    try:
+                        props = json.loads(el.get_attribute("data-props") or "{}")
+                        if "phones" in props and not company.phones:
+                            company.phones = normalize_phones(props["phones"])
+                    except Exception:
+                        pass
+
+                if messengers:
+                    company.messengers = messengers
+                    enriched += 1
+                if website and not company.website:
+                    company.website = website
+                if not company.emails:
+                    company.emails = extract_emails(page_content)
+
+            except Exception as e:
+                logger.debug(
+                    f"  JSprav PW: enrichment error for {detail_url}: {e}"
+                )
+
+            if i < total - 1:
+                adaptive_delay(0.5, 1.0)
+
+        logger.info(
+            f"  JSprav PW: enrichment завершён — {enriched}/{total} "
+            f"с мессенджерами"
+        )
+        return companies
+
+    @staticmethod
+    def _classify_messenger(url: str, messengers: dict) -> None:
+        """Классифицирует URL мессенджера и добавляет в dict."""
+        url_lower = url.lower()
+        if "t.me" in url_lower:
+            messengers["telegram"] = url
+        elif "vk.com" in url_lower or "vkontakte" in url_lower:
+            messengers["vk"] = url
+        elif "viber" in url_lower:
+            messengers["viber"] = url
+        elif "wa.me" in url_lower or "whatsapp" in url_lower:
+            messengers["whatsapp"] = url
+        elif "ok.ru" in url_lower:
+            messengers["odnoklassniki"] = url
+        elif "youtube" in url_lower or "youtu.be" in url_lower:
+            pass  # YouTube — не мессенджер, пропускаем
+        elif "instagram" in url_lower:
+            messengers["instagram"] = url
 
     # ═══════════════════════════════════════════════════════════════════
     #  РЕЖИМ: deep — обход каждой страницы компании

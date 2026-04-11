@@ -5,13 +5,13 @@
 cities:
   - name: "Москва"
     population: 13179670
-    region: "Город федерального значения"
+    region: "Москва"
     status: "pending"
     geo_center: [55.7558, 37.6173]
 
   - name: "Санкт-Петербург"
     population: 5664000
-    region: "Город федерального значения"
+    region: "Санкт-Петербург"
     status: "pending"
     geo_center: [59.9343, 30.3351]
 
@@ -167,7 +167,7 @@ cities:
 
   - name: "Севастополь"
     population: 561000
-    region: "Город федерального значения"
+    region: "Севастополь"
     status: "pending"
     geo_center: [44.6166, 33.5254]
 

@@ -2,9 +2,9 @@
 chcp 65001 >nul
 title Granite Workshops DB
 
-set CITY=Липецк
+set CITY=Севастополь
 
-set FORCE=--force
+:: set FORCE=--force
 :: set RE_ENRICH=--re-enrich
 
 echo ============================================

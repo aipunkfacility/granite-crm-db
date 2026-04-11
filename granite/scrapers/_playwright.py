@@ -45,18 +45,24 @@ if PLAYWRIGHT_AVAILABLE:
                 results_dgis = dgis.run()
                 results_yell = yell.run()
         """
+        _stealth_apply = None
+        # playwright-stealth >= 1.0: Stealth().apply(page)
+        # playwright-stealth < 1.0: stealth_sync(page) или stealth(page)
         try:
-            from playwright_stealth import stealth_sync
-            _has_stealth = callable(stealth_sync)
+            from playwright_stealth import Stealth
+            _stealth_apply = lambda page: Stealth().apply(page)
         except ImportError:
             try:
-                from playwright_stealth import stealth
-                stealth_sync = stealth
-                _has_stealth = callable(stealth)
+                from playwright_stealth import stealth_sync
+                _stealth_apply = stealth_sync
             except ImportError:
-                logger.warning("playwright-stealth не установлен, продолжаем без него "
-                               "(pip install playwright-stealth)")
-                _has_stealth = False
+                try:
+                    from playwright_stealth import stealth
+                    _stealth_apply = stealth
+                except ImportError:
+                    logger.warning("playwright-stealth не установлен, продолжаем без него "
+                                   "(pip install playwright-stealth)")
+        _has_stealth = _stealth_apply is not None
 
         pw = sync_playwright().start()
         try:
@@ -71,11 +77,11 @@ if PLAYWRIGHT_AVAILABLE:
                 )
                 try:
                     page = context.new_page()
-                    if _has_stealth:
+                    if _stealth_apply:
                         try:
-                            stealth_sync(page)
+                            _stealth_apply(page)
                         except Exception:
-                            # stealth_sync не применился — пропускаем
+                            # stealth не применился — пропускаем
                             logger.warning("playwright_stealth: не удалось применить stealth, продолжаем без него")
                     yield browser, page
                 finally:

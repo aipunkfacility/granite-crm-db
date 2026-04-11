@@ -3,6 +3,7 @@
 import yaml
 import re
 import threading
+import time
 import requests
 from pathlib import Path
 from loguru import logger
@@ -29,21 +30,40 @@ JSPRAV_CATEGORY = "izgotovlenie-i-ustanovka-pamyatnikov-i-nadgrobij"
 _jsprav_local = threading.local()
 
 
-def _get_jsprav_session() -> requests.Session:
-    """Создать сессию с CSRF-токеном для jsprav.ru (thread-safe)."""
+def _get_jsprav_session() -> requests.Session | None:
+    """Создать сессию с CSRF-токеном для jsprav.ru (thread-safe).
+
+    При таймаутах делает до 3 повторных попыток с паузой 5 сек.
+    Возвращает None если все попытки провалились.
+    """
     if not hasattr(_jsprav_local, "session") or _jsprav_local.session is None:
         session = requests.Session()
         session.headers.update(DEFAULT_HEADERS)
 
         # Получаем главную — там CSRF-токен в JS и cookie
-        r = session.get("https://jsprav.ru/", timeout=20)
-        if r.status_code == 200:
-            m = re.search(r'window\["csrf_token"\]\s*=\s*"([^"]+)"', r.text)
-            if m:
-                session.headers["X-CSRFToken"] = m.group(1)
-                logger.info(f"  jsprav.ru: CSRF получен")
-        else:
-            logger.warning("  jsprav.ru: главная недоступна")
+        # Ретраи при таймаутах
+        for attempt in range(3):
+            try:
+                r = session.get("https://jsprav.ru/", timeout=20)
+                if r.status_code == 200:
+                    m = re.search(r'window\["csrf_token"\]\s*=\s*"([^"]+)"', r.text)
+                    if m:
+                        session.headers["X-CSRFToken"] = m.group(1)
+                        logger.info("  jsprav.ru: CSRF получен")
+                else:
+                    logger.warning("  jsprav.ru: главная недоступна")
+                break
+            except (requests.Timeout, requests.ConnectionError) as e:
+                logger.warning(
+                    f"  jsprav.ru: попытка {attempt + 1}/3 — {e}"
+                )
+                if attempt < 2:
+                    time.sleep(5)
+                else:
+                    logger.error(
+                        "  jsprav.ru: все 3 попытки провалились, сессия не создана"
+                    )
+                    return None
 
         _jsprav_local.session = session
     return _jsprav_local.session
@@ -56,6 +76,9 @@ def _search_city(city: str) -> dict | None:
     или None.
     """
     session = _get_jsprav_session()
+    if session is None:
+        logger.warning(f"    jsprav API: сессия недоступна, пропуск {city}")
+        return None
     try:
         r = session.post(
             "https://jsprav.ru/api/cities/",
@@ -177,7 +200,12 @@ def discover_categories(cities: list[str], config: dict) -> dict:
                 logger.info(f"    jsprav {city}: из кэша — {cached}")
                 continue
 
-            result = find_jsprav(city, config)
+            try:
+                result = find_jsprav(city, config)
+            except Exception as e:
+                logger.warning(f"  Пропуск {city}: jsprav недоступен — {e}")
+                continue
+
             if result.get("categories"):
                 cache.setdefault("jsprav", {})[city] = result["categories"]
                 cache.setdefault("_subdomains", {}).setdefault("jsprav", {})[city] = result[
