@@ -14,6 +14,7 @@ from granite.pipeline.status import print_status
 # Import Dedup
 from granite.dedup.phone_cluster import cluster_by_phones
 from granite.dedup.site_matcher import cluster_by_site
+from granite.dedup.name_matcher import find_name_matches
 from granite.dedup.merger import merge_cluster
 from granite.dedup.validator import validate_phones, validate_emails
 
@@ -21,8 +22,9 @@ from granite.dedup.validator import validate_phones, validate_emails
 class DedupPhase:
     """Дедупликация: кластеризация по телефону/сайту + слияние."""
 
-    def __init__(self, db: Database):
+    def __init__(self, db: Database, config: dict | None = None):
         self.db = db
+        self.config = config or {}
 
     def run(self, city: str) -> int:
         """Запустить дедупликацию для города.
@@ -61,14 +63,14 @@ class DedupPhase:
                 d["phones"] = validate_phones(d.get("phones", []))
                 d["emails"] = validate_emails(d.get("emails", []))
 
-            # Алгоритмы кластеризации (только телефон и сайт — без name_matcher)
-            # TODO: подключить find_name_matches из granite.dedup.name_matcher
-            # для дедупликации по названиям (см. name_matcher.py)
+            # Алгоритмы кластеризации (телефон, сайт и имя)
             clusters_phone = cluster_by_phones(dicts)
             clusters_site = cluster_by_site(dicts)
+            name_threshold = self.config.get("dedup", {}).get("name_similarity_threshold", 88)
+            clusters_name = find_name_matches(dicts, threshold=name_threshold)
 
             # Объединение всех кластеров (Union-Find)
-            superclusters = self._union_find(dicts, clusters_phone + clusters_site)
+            superclusters = self._union_find(dicts, clusters_phone + clusters_site + clusters_name)
 
             print_status(
                 f"Найдено {len(superclusters)} уникальных компаний из {len(dicts)} записей"

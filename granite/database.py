@@ -162,7 +162,9 @@ def run_alembic_upgrade(engine, db_path: str, config_path: str = "config.yaml"):
     - Таблиц не существуют → create_all() + stamp head (raw SQL).
     """
     from sqlalchemy import text
-    HEAD_REVISION = 'a3f1b2c4d5e6'
+    alembic_cfg = _make_alembic_config(db_path, config_path)
+    from alembic.script import ScriptDirectory
+    HEAD_REVISION = ScriptDirectory.from_config(alembic_cfg).get_current_head()
 
     try:
         # 1. Проверяем, нужно ли что-то делать
@@ -235,7 +237,6 @@ class Database:
         self.engine = create_engine(
             f"sqlite:///{db_path}",
             echo=False,
-            pool_pre_ping=True,
             connect_args={"check_same_thread": False},
         )
 
@@ -257,11 +258,19 @@ class Database:
                     f"Миграции не применились, используем fallback create_all: {e}"
                 )
                 # Фоллбэк: создать таблицы напрямую из ORM-моделей
+                logger.warning(
+                    "create_all() fallback: CRM tables created WITHOUT FK CASCADE. "
+                    "Run 'python cli.py db upgrade head' to recreate with proper constraints."
+                )
                 Base.metadata.create_all(self.engine)
                 # Stamp alembic_version to avoid "table exists" loop on next run
                 self._stamp_alembic_head(db_path, config_path)
         else:
             # Без авто-миграций — просто создаём таблицы из ORM
+            logger.warning(
+                "create_all() fallback: CRM tables created WITHOUT FK CASCADE. "
+                "Run 'python cli.py db upgrade head' to recreate with proper constraints."
+            )
             Base.metadata.create_all(self.engine)
 
         self.SessionLocal = sessionmaker(bind=self.engine)
@@ -276,7 +285,9 @@ class Database:
         existing tables on the next run.
         """
         from sqlalchemy import text
-        HEAD_REVISION = 'a3f1b2c4d5e6'
+        alembic_cfg = _make_alembic_config(db_path, config_path)
+        from alembic.script import ScriptDirectory
+        HEAD_REVISION = ScriptDirectory.from_config(alembic_cfg).get_current_head()
         try:
             with self.engine.connect() as conn:
                 conn.execute(text(

@@ -56,7 +56,7 @@ class PipelineManager:
             search_delay=wc_config.get("search_delay", 2.0),
         )
         self.scraping = ScrapingPhase(config, db, self.region)
-        self.dedup = DedupPhase(db)
+        self.dedup = DedupPhase(db, config)
         self.enrichment = EnrichmentPhase(config, db, self.web)
         self.export = ExportPhase(config, db)
         # Lazy-loaded: ScoringPhase, NetworkDetector, ReverseLookup
