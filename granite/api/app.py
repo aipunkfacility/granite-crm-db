@@ -73,7 +73,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from granite.api import companies, touches, tasks, tracking, campaigns, followup, funnel
+from granite.api import companies, touches, tasks, tracking, campaigns, followup, funnel, messenger
 app.include_router(companies.router, prefix="/api/v1", tags=["companies"])
 app.include_router(touches.router, prefix="/api/v1", tags=["touches"])
 app.include_router(tasks.router, prefix="/api/v1", tags=["tasks"])
@@ -81,6 +81,7 @@ app.include_router(tracking.router, prefix="/api/v1", tags=["tracking"])
 app.include_router(campaigns.router, prefix="/api/v1", tags=["campaigns"])
 app.include_router(followup.router, prefix="/api/v1", tags=["followup"])
 app.include_router(funnel.router, prefix="/api/v1", tags=["funnel"])
+app.include_router(messenger.router, prefix="/api/v1", tags=["messenger"])
 
 
 @app.get("/health")
