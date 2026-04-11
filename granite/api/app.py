@@ -15,7 +15,7 @@ from loguru import logger
 async def lifespan(app: FastAPI):
     """Инициализация при старте, очистка при остановке."""
     import os
-    from sqlalchemy import create_engine
+    from sqlalchemy import create_engine, event
     from sqlalchemy.orm import sessionmaker
 
     try:
@@ -33,6 +33,14 @@ async def lifespan(app: FastAPI):
         f"sqlite:///{db_path}",
         connect_args={"check_same_thread": False},
     )
+
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragma(dbapi_conn, connection_record):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.close()
+
     Session = sessionmaker(bind=engine)
 
     app.state.engine = engine
