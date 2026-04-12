@@ -33,9 +33,9 @@ def create_touch(company_id: int, data: CreateTouchRequest, db: Session = Depend
         contact = CrmContactRow(company_id=company_id)
         db.add(contact)
 
-    if direction == "outgoing":
-        apply_outgoing_touch(contact, channel)
-    elif direction == "incoming":
+    if data.direction == "outgoing":
+        apply_outgoing_touch(contact, data.channel)
+    elif data.direction == "incoming":
         apply_incoming_touch(contact)
 
     db.flush()
