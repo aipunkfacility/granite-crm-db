@@ -104,11 +104,28 @@ def normalize_phones(phones: list[str]) -> list[str]:
     return result
 
 
+def extract_phones(text: str) -> list[str]:
+    """Извлечение российских телефонных номеров из текста.
+
+    Ищет номера формата: +7(903)123-45-67, 8 903 123 45 67,
+    79031234567 и вариации с пробелами/дефисами/скобками.
+
+    Returns:
+        Список уникальных найденных телефонов (в оригинальном формате из текста).
+    """
+    if not text:
+        return []
+    return list(dict.fromkeys(re.findall(
+        r"(\+?7[\s\-()]*\d{3}[\s\-()]*\d{3}[\s\-()]*\d{2}[\s\-()]*\d{2})",
+        text,
+    )))
+
+
 def extract_emails(text: str) -> list[str]:
     """Извлечение email из текста."""
     if not text:
         return []
-    return list(set(re.findall(
+    return list(dict.fromkeys(re.findall(
         r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}",
         text, re.IGNORECASE
     )))
@@ -120,9 +137,12 @@ def extract_domain(url: str) -> str | None:
         return None
     try:
         parsed = urlparse(url if "://" in url else f"https://{url}")
-        domain = parsed.netloc.lower().replace("www.", "")
+        domain = parsed.netloc.lower()
+        if domain.startswith("www."):
+            domain = domain[4:]
         return domain if domain else None
-    except Exception:
+    except Exception as e:
+        logger.debug(f"extract_domain failed for '{url}': {e}")
         return None
 
 
@@ -165,6 +185,29 @@ def extract_street(address: str) -> str:
     return address_lower.split(",")[0].strip() if "," in address_lower else address_lower
 
 
+# ===== URL Sanitization for Logs =====
+
+def _sanitize_url_for_log(url: str, max_len: int = 80) -> str:
+    """Sanitize URL before logging to avoid leaking PII.
+
+    1. Strip query parameters (may contain phone numbers, session tokens)
+    2. For wa.me/send?phone=... patterns, replace phone digits with ***
+    3. Truncate to max_len characters
+    """
+    if not url or not isinstance(url, str):
+        return "<no url>"
+    # Handle wa.me phone pattern before stripping query params
+    sanitized = re.sub(r'(wa\.me/send\?phone=)\d+', r'\1***', url)
+    # Strip query parameters
+    sanitized = sanitized.split('?')[0]
+    # Strip fragment
+    sanitized = sanitized.split('#')[0]
+    # Truncate
+    if len(sanitized) > max_len:
+        sanitized = sanitized[:max_len] + "..."
+    return sanitized
+
+
 # ===== HTTP-запросы с retry =====
 
 class NetworkError(Exception):
@@ -178,13 +221,13 @@ class SiteNotFoundError(Exception):
 
 
 # Retry для временных ошибок (502, 503, timeout, connection)
-# НЕ retry для 404 и 403 (заблокировали)
+# НЕ retry для 404, 403 и 429 (заблокировали / rate limit)
 def _should_retry(exc: BaseException) -> bool:
     if isinstance(exc, SiteNotFoundError):
         return False
     if isinstance(exc, requests.exceptions.HTTPError):
         response = exc.response
-        if response is not None and response.status_code in (403, 404):
+        if response is not None and response.status_code in (403, 404, 429):
             return False
     return True
 
@@ -202,36 +245,89 @@ def fetch_page(url: str, timeout: int = 15) -> str:
     Raises:
         NetworkError: после 3 неудачных попыток
         SiteNotFoundError: при 404
+        ValueError: если URL не прошёл проверку безопасности (SSRF)
     """
+    if not is_safe_url(url):
+        raise ValueError(f"URL blocked by safety check: {url[:60]}")
     headers = {"User-Agent": get_random_ua()}
     try:
         response = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
         if response.status_code == 404:
-            logger.warning(f"404 — {url}")
+            logger.warning(f"404 — {_sanitize_url_for_log(url)}")
             raise SiteNotFoundError(f"404: {url}")
         response.raise_for_status()
         return response.text
+    except requests.exceptions.SSLError as e:
+        # SSL verification failed (self-signed cert, hostname mismatch) —
+        # retry with verify=False as fallback
+        logger.debug(f"SSL error for {_sanitize_url_for_log(url)}, retrying with verify=False")
+        try:
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            response = requests.get(url, headers=headers, timeout=timeout,
+                                   allow_redirects=True, verify=False)
+            if response.status_code == 404:
+                raise SiteNotFoundError(f"404: {url}")
+            response.raise_for_status()
+            return response.text
+        except requests.exceptions.RequestException as e2:
+            logger.warning(f"SSL fallback also failed: {_sanitize_url_for_log(url)} — {e2}")
+            raise NetworkError(f"SSL failed: {url}") from e2
     except requests.exceptions.ConnectionError as e:
-        logger.warning(f"Connection error: {url} — {e}")
+        logger.warning(f"Connection error: {_sanitize_url_for_log(url)} — {e}")
         raise NetworkError(f"Connection failed: {url}") from e
     except requests.exceptions.Timeout:
-        logger.warning(f"Timeout: {url}")
+        logger.warning(f"Timeout: {_sanitize_url_for_log(url)}")
         raise NetworkError(f"Timeout: {url}")
     except requests.exceptions.HTTPError as e:
-        logger.warning(f"HTTP {e.response.status_code}: {url}")
+        status = e.response.status_code if e.response is not None else "?"
+        logger.warning(f"HTTP {status}: {_sanitize_url_for_log(url)}")
         raise
 
 
 def check_site_alive(url: str) -> int | None:
-    """HEAD-запрос для проверки, живой ли сайт. Возвращает статус-код или None."""
+    """HEAD-запрос для проверки, живой ли сайт. Возвращает статус-код или None.
+
+    Использует allow_redirects=True для корректной обработки HTTP→HTTPS
+    редиректов (301/302). Без follow redirects сайты с HTTP→HTTPS считались
+    бы «мёртвыми», и обогащение (мессенджеры, CMS) бы пропускалось.
+    """
     if not url:
         return None
+    if not is_safe_url(url):
+        raise ValueError(f"URL blocked by safety check: {url[:60]}")
     try:
         headers = {"User-Agent": get_random_ua()}
         r = requests.head(url, headers=headers, timeout=10, allow_redirects=True)
         return r.status_code
-    except Exception:
+    except requests.exceptions.SSLError:
+        # SSL verification failed — retry with verify=False
+        try:
+            import urllib3
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            headers = {"User-Agent": get_random_ua()}
+            r = requests.head(url, headers=headers, timeout=10, allow_redirects=True, verify=False)
+            return r.status_code
+        except Exception:
+            return None
+    except Exception as e:
+        logger.debug(f"check_site_alive failed for '{_sanitize_url_for_log(url, 60)}': {e}")
         return None
+
+
+def sanitize_filename(name: str) -> str:
+    """Санитизация имени файла: убираем path traversal и небезопасные символы.
+
+    Используется в экспортерах и дедуп-модулях для безопасного создания файлов
+    из пользовательских данных (названия городов, компаний).
+    """
+    if not name:
+        return "unnamed"
+    name = name.lower().strip()
+    name = re.sub(r"[^a-z0-9_-]", "_", name)
+    name = re.sub(r"_+", "_", name)
+    name = name.strip("_")
+    return name[:100]
 
 
 def pick_best_value(*values: str) -> str:
@@ -240,3 +336,102 @@ def pick_best_value(*values: str) -> str:
     if not candidates:
         return ""
     return max(candidates, key=len)
+
+
+# ===== URL Safety =====
+
+def is_safe_url(url: str) -> bool:
+    """Check that URL is not pointing to internal/private resources.
+
+    Blocks: localhost, private IPs (RFC 1918), link-local, loopback,
+    cloud-metadata (169.254), CGNAT (100.64/10), IPv6 ULA (fd00::/7),
+    and other internal ranges.  Uses ipaddress module for reliable
+    IPv4/IPv6 parsing (handles IPv6-mapped IPv4, brackets, etc.).
+    """
+    if not url or not isinstance(url, str):
+        return False
+    cleaned = re.sub(r'[\s\x00]+', '', url).split()[0]
+    if not cleaned:
+        return False
+    try:
+        parsed = urlparse(cleaned)
+    except Exception:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    hostname = parsed.hostname
+    if not hostname:
+        return False
+    hostname_lower = hostname.lower()
+    # Block known internal hostnames
+    if hostname_lower in ("localhost", "metadata.google.internal", "metadata"):
+        return False
+    # Try ipaddress-based check (handles IPv4, IPv6, brackets, mapped addrs)
+    try:
+        import ipaddress
+        ip = ipaddress.ip_address(hostname_lower)
+        # Handle IPv6-mapped IPv4 (e.g. ::ffff:127.0.0.1)
+        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+            ip = ip.ipv4_mapped
+        private_ranges = [
+            ipaddress.ip_network("127.0.0.0/8"),      # loopback
+            ipaddress.ip_network("10.0.0.0/8"),        # RFC 1918
+            ipaddress.ip_network("172.16.0.0/12"),     # RFC 1918
+            ipaddress.ip_network("192.168.0.0/16"),    # RFC 1918
+            ipaddress.ip_network("169.254.0.0/16"),    # link-local / cloud metadata
+            ipaddress.ip_network("0.0.0.0/8"),         # "this" network
+            ipaddress.ip_network("100.64.0.0/10"),     # CGNAT / shared address space
+            ipaddress.ip_network("192.0.0.0/24"),      # IETF protocol assignments
+            ipaddress.ip_network("192.0.2.0/24"),      # TEST-NET-1 (documentation)
+            ipaddress.ip_network("198.51.100.0/24"),   # TEST-NET-2
+            ipaddress.ip_network("203.0.113.0/24"),    # TEST-NET-3
+            ipaddress.ip_network("::1/128"),            # loopback
+            ipaddress.ip_network("::/128"),            # unspecified
+            ipaddress.ip_network("fc00::/7"),          # IPv6 ULA
+            ipaddress.ip_network("fe80::/10"),         # IPv6 link-local
+        ]
+        for net in private_ranges:
+            if ip in net:
+                return False
+    except ValueError:
+        pass  # hostname is not an IP — continue with string checks below
+
+    # Fast string-based checks for hostnames that resolve to internal IPs
+    # (defense-in-depth; ipaddress above handles pure-IP hostnames)
+    if hostname_lower.startswith(("127.", "10.", "192.168.", "169.254.", "0.")):
+        return False
+    if hostname_lower.startswith("172."):
+        parts = hostname_lower.split(".")
+        if len(parts) >= 2:
+            try:
+                second = int(parts[1])
+                if 16 <= second <= 31:
+                    return False
+            except ValueError:
+                pass
+    if hostname_lower.startswith("100."):
+        parts = hostname_lower.split(".")
+        if len(parts) >= 2:
+            try:
+                second = int(parts[1])
+                if 64 <= second <= 127:
+                    return False
+            except ValueError:
+                pass
+    # Block IPv6 private range prefixes (e.g. fd12:..., fe80:...)
+    if hostname_lower.startswith("fc") or hostname_lower.startswith("fe80"):
+        return False
+    return True
+
+
+def is_safe_link_url(url: str) -> bool:
+    """Check URL is safe for embedding in markdown links / hrefs.
+    Rejects javascript:, data:, vbscript: and other dangerous schemes.
+    """
+    if not url or not isinstance(url, str):
+        return False
+    try:
+        parsed = urlparse(url.strip())
+    except Exception:
+        return False
+    return parsed.scheme in ("http", "https") and bool(parsed.hostname)

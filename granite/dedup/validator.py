@@ -2,57 +2,11 @@
 import re
 import ipaddress
 from urllib.parse import urlparse
-import requests
-from granite.utils import normalize_phone, check_site_alive
+from granite.utils import normalize_phone, check_site_alive, is_safe_url
 from loguru import logger
-
-# Private/loopback IP ranges to block (SSRF protection)
-ALLOWED_HOSTS = frozenset(
-    [
-        "localhost",
-        "127.0.0.1",
-        "::1",
-    ]
-)
 
 # Email validation regex (precompiled for performance)
 _EMAIL_PATTERN = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
-BLOCKED_IP_RANGES = [
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("169.254.0.0/16"),  # AWS metadata
-    ipaddress.ip_network("0.0.0.0/8"),
-    ipaddress.ip_network("100.64.0.0/10"),
-    ipaddress.ip_network("192.0.0.0/24"),
-    ipaddress.ip_network("192.0.2.0/24"),
-    ipaddress.ip_network("198.51.100.0/24"),
-    ipaddress.ip_network("203.0.113.0/24"),
-    ipaddress.ip_network("fc00::/7"),
-    ipaddress.ip_network("fe80::/10"),
-    ipaddress.ip_network("::1/128"),
-]
-
-
-def _is_internal_url(url: str) -> bool:
-    """Проверка что URL не указывает на internal/private сеть (SSRF protection)."""
-    try:
-        parsed = urlparse(url)
-        host = parsed.hostname
-        if not host:
-            return True
-        if host in ALLOWED_HOSTS:
-            return True
-        try:
-            ip = ipaddress.ip_address(host)
-            for network in BLOCKED_IP_RANGES:
-                if ip in network:
-                    return True
-        except ValueError:
-            pass
-        return False
-    except Exception:
-        return True
 
 
 def validate_phone(phone: str) -> bool:
@@ -65,18 +19,13 @@ def validate_phone(phone: str) -> bool:
 
 def validate_phones(phones: list[str]) -> list[str]:
     """Оставляем только валидные и нормализованные номера."""
-    result = []
+    seen: set[str] = set()
+    unique = []
     for p in phones:
         norm = normalize_phone(p)
-        if norm and validate_phone(norm):
-            result.append(norm)
-    # Дедупликация с сохранением порядка
-    seen: set = set()
-    unique = []
-    for p in result:
-        if p not in seen:
-            seen.add(p)
-            unique.append(p)
+        if norm and validate_phone(norm) and norm not in seen:
+            seen.add(norm)
+            unique.append(norm)
     return unique
 
 
@@ -86,21 +35,19 @@ def validate_website(url: str) -> tuple[str | None, int | None]:
     Если сайт мёртв — возвращает (url, None).
     Нормализует URL: добавляет https:// если нет схемы.
     """
-    if not url or url.strip() in ("", "-", "N/A"):
+    if not url or url.strip().lower() in ("", "-", "n/a"):
         return None, None
 
     url = url.strip()
-    if not url.startswith("http"):
+    # Clean whitespace/null bytes before scheme check
+    url = re.sub(r'[\s\x00]+', '', url).split()[0]
+    if not url.startswith(("http://", "https://")):
         url = f"https://{url}"
 
-    # SSRF protection: block internal/private URLs
-    if _is_internal_url(url):
+    # SSRF protection: single check via is_safe_url (single source of truth)
+    if not is_safe_url(url):
         logger.debug(f"  SSRF blocked: {url}")
         return None, None
-
-    # Убираем мусор который иногда прилетает из скреперов
-    if " " in url or "\n" in url:
-        url = url.split()[0]
 
     status = check_site_alive(url)
     if status is None:
@@ -117,4 +64,4 @@ def validate_email(email: str) -> bool:
 
 def validate_emails(emails: list[str]) -> list[str]:
     """Фильтрация валидных email с дедупликацией."""
-    return list(dict.fromkeys(e for e in emails if validate_email(e)))
+    return list(dict.fromkeys(e.strip() for e in emails if validate_email(e)))

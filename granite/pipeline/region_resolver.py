@@ -6,6 +6,10 @@
 """
 from granite.regions import get_region_cities
 
+__all__ = ["STANDARD_SOURCES", "RegionResolver"]
+
+STANDARD_SOURCES = ["jsprav", "web_search", "dgis", "yell"]
+
 
 class RegionResolver:
     """Работа с конфигурацией городов и областей."""
@@ -24,7 +28,7 @@ class RegionResolver:
         """
         target_region = None
         for c in self.config.get("cities", []):
-            if c["name"] == city:
+            if c.get("name") == city:
                 target_region = c.get("region", "")
                 break
         if not target_region:
@@ -39,7 +43,9 @@ class RegionResolver:
         siblings = []
         for c in self.config.get("cities", []):
             if c.get("region") == target_region:
-                siblings.append(c["name"])
+                c_name = c.get("name")
+                if c_name:
+                    siblings.append(c_name)
         return siblings if siblings else [city]
 
     def is_source_enabled(self, source: str) -> bool:
@@ -53,5 +59,5 @@ class RegionResolver:
             sources: список источников для проверки (по умолчанию все стандартные).
         """
         if sources is None:
-            sources = ["jsprav", "firecrawl", "dgis", "yell", "firmsru"]
+            sources = STANDARD_SOURCES
         return [s for s in sources if self.is_source_enabled(s)]

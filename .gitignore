@@ -11,4 +11,4 @@ build/
 *.egg-info/
 .idea/
 .vscode/
-*.log
+*.logvenv/

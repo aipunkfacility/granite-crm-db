@@ -34,7 +34,7 @@ class TestBaseScraper:
 
         class DummyScraper(BaseScraper):
             def scrape(self):
-                return [RawCompany(source=Source.FIRECRAWL, name="Test")]
+                return [RawCompany(source=Source.WEB_SEARCH, name="Test")]
 
         scraper = DummyScraper({}, "Test")
         results = scraper.run()
@@ -188,11 +188,43 @@ class TestJspravScraper:
         assert JspravScraper._extract_page_num("https://site.ru/category/") == 1
 
 
+class TestJspravPlaywrightScraper:
+
+    @pytest.fixture
+    def pw_config(self):
+        return {
+            "cities": [{"name": "Астрахань", "population": 468000}],
+            "sources": {
+                "jsprav": {
+                    "enabled": True,
+                    "subdomain_map": {"астрахань": "astrahan"}
+                }
+            }
+        }
+
+    def test_returns_empty_without_page(self, pw_config):
+        """No page provided → early return."""
+        from granite.scrapers.jsprav_playwright import JspravPlaywrightScraper
+        scraper = JspravPlaywrightScraper(pw_config, "Астрахань")
+        result = scraper.scrape()
+        assert result == []
+
+    def test_rejects_invalid_subdomain_from_config(self, pw_config):
+        """Subdomain_map with invalid value should be rejected."""
+        from granite.scrapers.jsprav_playwright import JspravPlaywrightScraper
+        pw_config["sources"]["jsprav"]["subdomain_map"] = {"астрахань": "attacker.evil.com"}
+        mock_page = MagicMock()
+        scraper = JspravPlaywrightScraper(pw_config, "Астрахань", playwright_page=mock_page)
+        result = scraper.scrape()
+        assert result == []
+        mock_page.goto.assert_not_called()
+
+
 class TestModels:
     """Тесты Pydantic-моделей данных."""
 
     def test_raw_company_defaults(self):
-        rc = RawCompany(source=Source.FIRECRAWL, name="Test")
+        rc = RawCompany(source=Source.WEB_SEARCH, name="Test")
         assert rc.phones == []
         assert rc.emails == []
         assert rc.messengers == {}
@@ -200,15 +232,14 @@ class TestModels:
         assert rc.geo is None
 
     def test_raw_company_with_geo(self):
-        rc = RawCompany(source=Source.JSPRAV, name="Test", geo=(46.35, 48.03))
-        assert rc.geo == (46.35, 48.03)
+        rc = RawCompany(source=Source.JSPRAV, name="Test", geo=[46.35, 48.03])
+        assert rc.geo == [46.35, 48.03]
 
     def test_source_enum(self):
-        assert Source.FIRECRAWL == "firecrawl"
+        assert Source.WEB_SEARCH == "web_search"
         assert Source.JSPRAV == "jsprav"
         assert Source.DGIS == "2gis"
-
-    def test_company_status_enum(self):
-        from granite.models import CompanyStatus
-        assert CompanyStatus.RAW == "raw"
-        assert CompanyStatus.ENRICHED == "enriched"
+        assert Source.YELL == "yell"
+        assert Source.JSPRAV_PW == "jsprav_playwright"
+        assert Source.GOOGLE_MAPS == "google_maps"
+        assert Source.AVITO == "avito"

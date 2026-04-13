@@ -6,13 +6,20 @@
 """
 
 from collections import Counter
-from granite.database import Database, EnrichedCompanyRow
+from granite.database import Database, EnrichedCompanyRow, CompanyRow
 from loguru import logger
 from granite.pipeline.status import print_status
 
+__all__ = ["ScoringPhase"]
+
 
 class ScoringPhase:
-    """Пересчёт crm_score и segment для enriched-записей города."""
+    """Пересчёт crm_score и segment для enriched-записей города.
+
+    Design note: scoring relies on a single bulk commit via the ``session_scope``
+    context manager (intentional — unlike enrichment_phase which commits
+    per-record / in batches, scoring is CPU-only and safe to flush at once).
+    """
 
     def __init__(self, db: Database, classifier):
         """
@@ -46,7 +53,12 @@ class ScoringPhase:
                     c.crm_score = score
                     c.segment = segment
                     segments[segment] += 1
-                except Exception as e:
+
+                    # Синхронизация segment в companies-таблицу
+                    parent = session.get(CompanyRow, c.id)
+                    if parent is not None:
+                        parent.segment = segment
+                except (KeyError, TypeError, ValueError) as e:
                     logger.warning(
                         f"Ошибка скоринга для компании {c.id} ({c.name}): {e}"
                     )

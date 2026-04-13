@@ -9,6 +9,9 @@ from granite.database import Database
 from granite.exporters.csv import CsvExporter
 from granite.exporters.markdown import MarkdownExporter
 from granite.pipeline.status import print_status
+from granite.utils import sanitize_filename
+
+__all__ = ["ExportPhase"]
 
 
 class ExportPhase:
@@ -29,7 +32,8 @@ class ExportPhase:
         try:
             exporter = CsvExporter(self.db)
             exporter.export_city(city)
-            print_status(f"Экспорт завершён: data/export/{city.lower()}_enriched.csv", "success")
+            safe_city = sanitize_filename(city)
+            print_status(f"Экспорт завершён: data/export/{safe_city}_enriched.csv", "success")
         except Exception as e:
             logger.error(f"Ошибка экспорта для {city}: {e}")
             print_status(f"Экспорт не удался: {e}", "warning")

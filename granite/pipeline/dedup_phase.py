@@ -5,6 +5,8 @@
 кластеризации и слияния дубликатов.
 """
 
+from typing import Any
+
 from granite.database import Database, RawCompanyRow, CompanyRow
 from loguru import logger
 from granite.pipeline.status import print_status
@@ -12,6 +14,7 @@ from granite.pipeline.status import print_status
 # Import Dedup
 from granite.dedup.phone_cluster import cluster_by_phones
 from granite.dedup.site_matcher import cluster_by_site
+from granite.dedup.name_matcher import find_name_matches
 from granite.dedup.merger import merge_cluster
 from granite.dedup.validator import validate_phones, validate_emails
 
@@ -19,8 +22,9 @@ from granite.dedup.validator import validate_phones, validate_emails
 class DedupPhase:
     """Дедупликация: кластеризация по телефону/сайту + слияние."""
 
-    def __init__(self, db: Database):
+    def __init__(self, db: Database, config: dict | None = None):
         self.db = db
+        self.config = config or {}
 
     def run(self, city: str) -> int:
         """Запустить дедупликацию для города.
@@ -44,7 +48,7 @@ class DedupPhase:
                         "source": r.source,
                         "source_url": r.source_url or "",
                         "name": r.name,
-                        "phones": r.phones or [],
+                        "phones": r.phones if isinstance(r.phones, list) else [r.phones] if isinstance(r.phones, str) else [],
                         "address_raw": r.address_raw or "",
                         "website": r.website,
                         "emails": r.emails or [],
@@ -59,12 +63,14 @@ class DedupPhase:
                 d["phones"] = validate_phones(d.get("phones", []))
                 d["emails"] = validate_emails(d.get("emails", []))
 
-            # Алгоритмы кластеризации (только телефон и сайт — без name_matcher)
+            # Алгоритмы кластеризации (телефон, сайт и имя)
             clusters_phone = cluster_by_phones(dicts)
             clusters_site = cluster_by_site(dicts)
+            name_threshold = self.config.get("dedup", {}).get("name_similarity_threshold", 88)
+            clusters_name = find_name_matches(dicts, threshold=name_threshold)
 
             # Объединение всех кластеров (Union-Find)
-            superclusters = self._union_find(dicts, clusters_phone + clusters_site)
+            superclusters = self._union_find(dicts, clusters_phone + clusters_site + clusters_name)
 
             print_status(
                 f"Найдено {len(superclusters)} уникальных компаний из {len(dicts)} записей"
@@ -86,6 +92,10 @@ class DedupPhase:
                     emails=merged["emails"],
                     city=merged["city"],
                     status="raw",
+                    merged_from=merged.get("merged_from", []),
+                    messengers=merged.get("messengers", {}),
+                    needs_review=merged.get("needs_review", False),
+                    review_reason=merged.get("review_reason", ""),
                 )
                 session.add(row)
 
@@ -104,7 +114,9 @@ class DedupPhase:
             return len(superclusters)
 
     @staticmethod
-    def _union_find(dicts: list[dict], clusters: list[list[int]]) -> list[list[int]]:
+    def _union_find(
+        dicts: list[dict[str, Any]], clusters: list[list[int]]
+    ) -> list[list[int]]:
         """Объединение перекрывающихся кластеров через Union-Find.
 
         Args:

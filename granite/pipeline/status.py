@@ -2,10 +2,14 @@
 from rich.console import Console
 from rich.table import Table
 
-console = Console()
+__all__ = ["print_status", "print_table"]
+
+# Eager initialization to avoid thread-race on lazy _get_console()
+_console = Console()
 
 def print_status(message: str, level: str = "info"):
     """Вывод статуса через rich."""
+    console = _console
     if level == "info":
         console.print(f"[cyan]ℹ[/cyan] {message}")
     elif level == "success":
@@ -16,9 +20,12 @@ def print_status(message: str, level: str = "info"):
         console.print(f"[red]✖[/red] {message}")
     elif level == "bold":
         console.print(f"[bold white]{message}[/bold white]")
+    else:
+        console.print(f"[dim]{message}[/dim]  [red](unknown level: {level})[/red]")
 
 def print_table(title: str, columns: list[str], rows: list[list[str]]):
     """Вывод красивой таблицы через rich."""
+    console = _console
     table = Table(title=title, show_header=True, header_style="bold magenta")
     for col in columns:
         table.add_column(col)

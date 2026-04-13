@@ -1,7 +1,6 @@
 # scrapers/base.py
 import traceback
 from abc import ABC, abstractmethod
-from typing import Optional
 from granite.models import RawCompany
 from loguru import logger
 
@@ -13,12 +12,14 @@ class BaseScraper(ABC):
         self.config = config
         self.city = city
         self.city_config = self._get_city_config()
+        self.last_error: str | None = None
 
     def _get_city_config(self) -> dict:
         """Получить конфиг города из config.yaml."""
         for c in self.config.get("cities", []):
-            if c["name"] == self.city:
+            if c.get("name") == self.city:
                 return c
+        logger.warning(f"City '{self.city}' not found in config, returning empty defaults")
         return {}
 
     @abstractmethod
@@ -34,7 +35,7 @@ class BaseScraper(ABC):
         After call, check self.last_error for error details.
         """
         logger.info(f"[{self.__class__.__name__}] Запуск для города: {self.city}")
-        self.last_error: Optional[str] = None
+        self.last_error: str | None = None
         try:
             results = self.scrape()
             logger.info(f"[{self.__class__.__name__}] Найдено: {len(results)} компаний")

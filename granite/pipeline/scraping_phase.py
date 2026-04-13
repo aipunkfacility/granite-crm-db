@@ -9,22 +9,22 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from loguru import logger
 from granite.database import Database, RawCompanyRow
 from granite.pipeline.status import print_status
+from granite.pipeline.region_resolver import STANDARD_SOURCES
 from granite.category_finder import discover_categories, get_categories, get_subdomain
 
 # Import Scrapers
 from granite.scrapers._playwright import playwright_session
 from granite.scrapers.jsprav import JspravScraper
+from granite.scrapers.jsprav_playwright import JspravPlaywrightScraper
 from granite.scrapers.dgis import DgisScraper
 from granite.scrapers.yell import YellScraper
-from granite.scrapers.firmsru import FirmsruScraper
-from granite.scrapers.firecrawl import FirecrawlScraper
+from granite.scrapers.web_search import WebSearchScraper
 
-# Стандартные источники для отображения
-_STANDARD_SOURCES = ["jsprav", "firecrawl", "dgis", "yell", "firmsru"]
+__all__ = ["ScrapingPhase"]
 
 
 class ScrapingPhase:
-    """Координация скраперов: категорийный поиск + сбор данных."""
+    """Координация скреперов: категорийный поиск + сбор данных."""
 
     def __init__(self, config: dict, db: Database, region_resolver):
         """
@@ -35,7 +35,7 @@ class ScrapingPhase:
         """
         self.config = config
         self.db = db
-        self.region = region_resolver
+        self.region_resolver = region_resolver
 
     def run(self, city: str, region_cities: list[str] | None = None) -> int:
         """Запустить фазу 0+1 для города.
@@ -51,11 +51,11 @@ class ScrapingPhase:
             region_cities = [city]
 
         # Показываем какие источники включены
-        active = self.region.get_active_sources(_STANDARD_SOURCES)
+        active = self.region_resolver.get_active_sources(STANDARD_SOURCES)
         print_status(f"Источники: {', '.join(active)}", "info")
 
         # ФАЗА 0: Поиск рабочих категорий в справочниках
-        if self.region.is_source_enabled("jsprav"):
+        if self.region_resolver.is_source_enabled("jsprav"):
             print_status("Поиск категорий в справочниках...", "info")
             cat_cache = discover_categories(region_cities, self.config)
         else:
@@ -78,7 +78,7 @@ class ScrapingPhase:
         raw_results = []
 
         if max_threads > 1 and len(region_cities) > 1:
-            # Параллельный парсинг городов (только быстрые скреперы без Playwright)
+            # Параллельный парсинг городов (каждый поток создаёт свою сессию Playwright)
             print_status(
                 f"Параллельный парсинг {len(region_cities)} городов на {max_threads} потоках",
                 "info",
@@ -115,42 +115,98 @@ class ScrapingPhase:
         return raw_results
 
     def _scrape_single_city(self, rc: str, city: str, cat_cache: dict) -> list:
-        """Скрапинг одного города (для ThreadPoolExecutor)."""
+        """Скрапинг одного города (для ThreadPoolExecutor).
+
+        Порядок:
+        1. Быстрые скреперы (jsprav, web_search) — без браузера.
+        2. Playwright-зависимые скреперы (jsprav_playwright) — общий контекст.
+        3. Crawlee-скреперы (dgis, yell) — управляют собственным браузером.
+        """
         print_status(f"  Парсинг: {rc}", "info")
         city_results = []
 
         jsprav_cats = get_categories(cat_cache, "jsprav", rc)
         jsprav_sub = get_subdomain(cat_cache, "jsprav", rc, self.config)
         yell_cats = get_categories(cat_cache, "yell", rc)
-        firmsru_cats = get_categories(cat_cache, "firmsru", rc)
 
-        # 1. Быстрые скреперы (без Playwright)
-        if self.region.is_source_enabled("jsprav"):
+        # ── 1. Быстрые скреперы (без браузера) ──
+        jsprav_needs_pw = False
+        if self.region_resolver.is_source_enabled("jsprav"):
             jsprav = JspravScraper(
                 self.config, rc, categories=jsprav_cats, subdomain=jsprav_sub
             )
-            city_results.extend(jsprav.run())
+            jsprav_results = jsprav.run()
+            city_results.extend(jsprav_results)
+            # Проверяем, нужна ли дообработка через Playwright
+            if jsprav._needs_playwright:
+                jsprav_needs_pw = True
+                got = len(jsprav_results)
+                need = jsprav._declared_total or "?"
+                logger.info(
+                    f"  JSprav собрал {got}/{need} для {rc}, "
+                    f"запускаю Playwright для добора"
+                )
 
-        if self.region.is_source_enabled("firecrawl"):
-            firecrawl = FirecrawlScraper(self.config, rc)
-            city_results.extend(firecrawl.run())
+        if self.region_resolver.is_source_enabled("web_search"):
+            web_search = WebSearchScraper(self.config, rc)
+            city_results.extend(web_search.run())
 
-        # 2. Playwright скреперы (NOT parallelizable — shared browser session)
-        pw_sources = ["dgis", "yell", "firmsru"]
-        if any(self.region.is_source_enabled(s) for s in pw_sources):
+        # ── 2. Playwright скреперы (jsprav_playwright fallback) ──
+        jsprav_pw_enabled = self.config.get("sources", {}).get(
+            "jsprav_playwright", {}
+        ).get("enabled", False)
+
+        if jsprav_needs_pw or jsprav_pw_enabled:
             with playwright_session(headless=True) as (browser, page):
-                if page:
-                    if self.region.is_source_enabled("dgis"):
-                        dgis = DgisScraper(self.config, rc, page)
-                        city_results.extend(dgis.run())
-                    if self.region.is_source_enabled("yell"):
-                        yell = YellScraper(self.config, rc, page, categories=yell_cats)
-                        city_results.extend(yell.run())
-                    if self.region.is_source_enabled("firmsru"):
-                        firmsru = FirmsruScraper(
-                            self.config, rc, page, categories=firmsru_cats
+                if page and jsprav_cats:
+                    pw_kwargs = dict(
+                        config=self.config,
+                        city=rc,
+                        playwright_page=page,
+                        categories=jsprav_cats,
+                        subdomain=jsprav_sub,
+                    )
+                    # Совместимость: mode поддерживается только в новых версиях
+                    try:
+                        jsprav_pw = JspravPlaywrightScraper(**pw_kwargs, mode="click_more")
+                    except TypeError:
+                        jsprav_pw = JspravPlaywrightScraper(**pw_kwargs)
+                    pw_results = jsprav_pw.run()
+                    # Дедуплируем: исключаем компании, уже найденные JspravScraper
+                    # Используем URL и телефон для точного matching (а не только имя)
+                    seen_urls = {c.website for c in city_results if c.website}
+                    seen_phones = set()
+                    for c in city_results:
+                        for p in c.phones:
+                            seen_phones.add(p)
+                    new_results = []
+                    for c in pw_results:
+                        is_dup = False
+                        if c.website and c.website in seen_urls:
+                            is_dup = True
+                        if not is_dup:
+                            for p in c.phones:
+                                if p in seen_phones:
+                                    is_dup = True
+                                    break
+                        if not is_dup:
+                            new_results.append(c)
+                    city_results.extend(new_results)
+                    if new_results:
+                        logger.info(
+                            f"  JSprav PW: добрано {len(new_results)} новых компаний для {rc}"
                         )
-                        city_results.extend(firmsru.run())
+
+        # ── 3. Crawlee-скреперы (dgis, yell) ──
+        # DgisScraper и YellScraper управляют собственным браузером через Crawlee.
+        # Их НЕ нужно запускать внутри playwright_session().
+        if self.region_resolver.is_source_enabled("dgis"):
+            dgis = DgisScraper(self.config, rc)
+            city_results.extend(dgis.run())
+
+        if self.region_resolver.is_source_enabled("yell"):
+            yell = YellScraper(self.config, rc, categories=yell_cats)
+            city_results.extend(yell.run())
 
         return city_results
 
@@ -158,6 +214,14 @@ class ScrapingPhase:
         """Сохранить сырые данные в БД."""
         with self.db.session_scope() as session:
             for r in raw_results:
+                # Сериализация geo: list[float] → "lat,lon" (String в БД)
+                geo_str = None
+                if r.geo:
+                    try:
+                        geo_str = ",".join(str(v) for v in r.geo)
+                    except (TypeError, ValueError):
+                        pass
+
                 row = RawCompanyRow(
                     source=r.source.value,
                     source_url=r.source_url,
@@ -166,6 +230,7 @@ class ScrapingPhase:
                     address_raw=r.address_raw,
                     website=r.website,
                     emails=r.emails,
+                    geo=geo_str,
                     scraped_at=r.scraped_at,
                     city=r.city,
                     messengers=r.messengers,

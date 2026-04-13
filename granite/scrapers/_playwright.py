@@ -19,16 +19,16 @@ def _get_random_desktop_ua() -> str:
     которые сами по себе являются сигнатурой ботов.
     """
     uas = [
-        # Chrome на Windows
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        # Chrome на macOS
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        # Firefox на Windows
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
-        # Edge на Windows
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0",
+        # Chrome 134 на Windows
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+        # Chrome 134 на macOS
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+        # Firefox 135 на Windows
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:134.0) Gecko/20100101 Firefox/134.0",
+        # Edge 134 на Windows
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36 Edg/134.0.0.0",
     ]
     return random.choice(uas)
 
@@ -45,40 +45,56 @@ if PLAYWRIGHT_AVAILABLE:
                 results_dgis = dgis.run()
                 results_yell = yell.run()
         """
+        _stealth_apply = None
+        # playwright-stealth >= 1.0: Stealth().apply(page)
+        # playwright-stealth < 1.0: stealth_sync(page) или stealth(page)
         try:
-            from playwright_stealth import stealth_sync
-            _has_stealth = True
+            from playwright_stealth import Stealth
+            _stealth_apply = lambda page: Stealth().apply(page)
         except ImportError:
             try:
-                from playwright_stealth import stealth
-                stealth_sync = stealth
-                _has_stealth = True
+                from playwright_stealth import stealth_sync
+                _stealth_apply = stealth_sync
             except ImportError:
-                logger.warning("playwright-stealth не установлен, продолжаем без него "
-                               "(pip install playwright-stealth)")
-                _has_stealth = False
+                try:
+                    from playwright_stealth import stealth
+                    _stealth_apply = stealth
+                except ImportError:
+                    logger.warning("playwright-stealth не установлен, продолжаем без него "
+                                   "(pip install playwright-stealth)")
+        _has_stealth = _stealth_apply is not None
 
         pw = sync_playwright().start()
-        browser = pw.chromium.launch(
-            headless=headless,
-            args=["--disable-blink-features=AutomationControlled"],
-        )
-        context = browser.new_context(
-            viewport={"width": 1920, "height": 1080},
-            user_agent=_get_random_desktop_ua(),
-        )
-        page = context.new_page()
-        if _has_stealth:
-            try:
-                stealth_sync(page)
-            except TypeError:
-                # Если stealth_sync это модуль, а не функция — пропускаем
-                logger.warning("playwright_stealth: не удалось применить stealth, продолжаем без него")
         try:
-            yield browser, page
+            browser = pw.chromium.launch(
+                headless=headless,
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+            try:
+                context = browser.new_context(
+                    viewport={"width": 1920, "height": 1080},
+                    user_agent=_get_random_desktop_ua(),
+                )
+                try:
+                    page = context.new_page()
+                    if _stealth_apply:
+                        try:
+                            _stealth_apply(page)
+                        except Exception:
+                            # stealth не применился — пропускаем
+                            logger.warning("playwright_stealth: не удалось применить stealth, продолжаем без него")
+                    yield browser, page
+                finally:
+                    try:
+                        context.close()
+                    except Exception:
+                        pass
+            finally:
+                try:
+                    browser.close()
+                except Exception:
+                    pass
         finally:
-            context.close()
-            browser.close()
             pw.stop()
 else:
     @contextmanager

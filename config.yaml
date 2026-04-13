@@ -1,16 +1,17 @@
-# config.yaml — ЕДИНСТВЕННЫЙ источник настроек
+# Granite CRM configuration
+# No schema validation — malformed config will fail at runtime
 
 # ===== Города =====
 cities:
   - name: "Москва"
     population: 13179670
-    region: "Город федерального значения"
+    region: "Москва"
     status: "pending"
     geo_center: [55.7558, 37.6173]
 
   - name: "Санкт-Петербург"
     population: 5664000
-    region: "Город федерального значения"
+    region: "Санкт-Петербург"
     status: "pending"
     geo_center: [59.9343, 30.3351]
 
@@ -166,7 +167,7 @@ cities:
 
   - name: "Севастополь"
     population: 561000
-    region: "Город федерального значения"
+    region: "Севастополь"
     status: "pending"
     geo_center: [44.6166, 33.5254]
 
@@ -266,6 +267,37 @@ cities:
     status: "completed"
     geo_center: [46.3479, 48.0330]
 
+  # ── Малые города Омской области ──
+  - name: "Тара"
+    population: 26700
+    region: "Омская область"
+    status: "pending"
+    geo_center: [56.9114, 74.1542]
+
+  - name: "Исилькуль"
+    population: 22600
+    region: "Омская область"
+    status: "pending"
+    geo_center: [55.1075, 71.2778]
+
+  - name: "Калачинск"
+    population: 22000
+    region: "Омская область"
+    status: "pending"
+    geo_center: [55.0306, 74.5817]
+
+  - name: "Называевск"
+    population: 11900
+    region: "Омская область"
+    status: "pending"
+    geo_center: [55.9769, 72.5861]
+
+  - name: "Тюкалинск"
+    population: 11300
+    region: "Омская область"
+    status: "pending"
+    geo_center: [55.8658, 72.3453]
+
 # ===== Общие настройки скрапинга =====
 scraping:
   request_delay: 1.5
@@ -275,12 +307,14 @@ scraping:
   retry_max_wait: 30
   user_agent_rotation: true
   max_threads: 3
+  failed_domain_cache_ttl: 600  # секунд — кэш недоступных доменов в web_search
 
 # ===== Настройки источников =====
 sources:
-  firecrawl:
+  web_search:
     enabled: true
     max_retries: 3
+    search_limit: 10
     queries:
       - "гранитная мастерская памятники"
       - "производство памятников гранит"
@@ -298,24 +332,37 @@ sources:
       астрахань: "astrahan"
       москва: "moskva1"
       санкт-петербург: "sankt-peterburg1"
+      тара: "tara"
+      называевск: "nazyivaevsk"
+      исилькуль: "isilkul"
+      калачинск: "kalachinsk"
+      тюкалинск: "tyukalinsk"
 
   dgis:
     enabled: false
     max_retries: 3
     search_category: "изготовление памятников"
+    # Phase 7: Переписан на Crawlee + 2GIS Catalog API.
+    # Два режима: API (при наличии DGIS_API_KEY) и Crawlee BeautifulSoupCrawler (fallback).
+    # API mode: пагинация через параметр page, anti-bot через escalating backoff при 403/429.
+    # Crawlee mode: парсинг страницы результатов, без пагинации (max_requests_per_crawl=1).
+    api_key: ""                  # из .env: DGIS_API_KEY (приоритетнее env)
+    max_pages: 5                 # страниц пагинации (API mode)
+    delay: 1.5                   # секунд между запросами к API
 
   yell:
     enabled: false
     max_retries: 3
     base_path: "/catalog/izgotovlenie_pamyatnikov/"
-
-  firmsru:
-    enabled: false
-    max_retries: 3
-    base_path: "/{city}/izgotovlenie-pamyatnikov/"
+    # Phase 7: Переписан на Crawlee PlaywrightCrawler.
+    # Управляет собственным браузером (НЕ требует внешнего playwright_page).
+    # Пагинация через кнопку «Показать ещё», случайная задержка между кликами.
+    # Категории берутся из category_finder (приоритет) или base_path (fallback).
+    max_pages: 5                 # страниц пагинации («Показать ещё»)
+    delay: 2.0                   # секунд между действиями
 
   jsprav_playwright:
-    enabled: false
+    enabled: true  # авто-fallback: запускается если JspravScraper не добрал компании
 
   google_maps:
     enabled: false
@@ -331,6 +378,16 @@ sources:
     max_retries: 2
     category_path: "/uslugi/ritualnye_uslugi"
 
+# ===== Crawlee (session pool, proxy) =====
+# Общие настройки для Crawlee-based скраперов (2GIS, Yell).
+# Session pool управляет куками и ротацией сессий.
+# При 403/429/captcha сессия помечается как заблокированная и ротируется.
+# Proxy rotation включается при заданном proxy_url.
+crawlee:
+  use_session_pool: true       # включить управление сессиями (cookies, rotation)
+  max_session_rotations: 10    # макс. ротаций сессии перед остановкой
+  proxy_url: ""                # URL прокси (или из .env: CRAWLEE_PROXY_URL)
+
 # ===== Дедупликация =====
 dedup:
   name_similarity_threshold: 88
@@ -341,22 +398,39 @@ dedup:
 
 # ===== Обогащение =====
 enrichment:
-  messenger_pages:
-    - "/"
-    - "/contacts"
-    - "/kontakty"
-    - "/about"
-    - "/o-nas"
-    - "/katalog"
-    - "/produkciya"
+  # WebClient: используется для точечного веб-поиска в enrichment_phase
+  web_client:
+    timeout: 60
+    search_limit: 3
+    search_delay: 2.0  # секунд — задержка между Google SERP запросами (rate limiting)
 
+  # Параллелизация: кол-во потоков для обогащения (1 = последовательно)
+  max_concurrent: 3
+
+  # Async HTTP: включить async-режим обогащения (httpx.AsyncClient + asyncio)
+  # Если false — используется ThreadPoolExecutor (legacy sync)
+  # Если true — используется asyncio.Semaphore + httpx.AsyncClient (быстрее)
+  async_enabled: false
+
+  # Батч: flush каждые N enriched-записей в enrichment_phase
+  batch_flush: 50
+
+  # Network detector: порог для определения сети филиалов
+  network_threshold: 2
+
+  # Telegram: общие настройки
   tg_finder:
     check_delay: 1.5
+    max_retries: 5
+    initial_backoff: 5  # секунд — начальная выдержка при 429
+    request_timeout: 10  # секунд
     google_search_enabled: true
     website_check_enabled: true
 
   tg_trust:
     empty_profile_penalty: -5
+    check_delay_min: 1.0  # adaptive_delay min для check_tg_trust
+    check_delay_max: 2.0
 
   tech_keywords:
     equipment:
@@ -398,6 +472,24 @@ enrichment:
       - "jimdo"
       - "weebly"
       - "wordpress.com"
+
+  # Reverse Lookup (Фаза 6): поиск в 2GIS и Yell для компаний с малым количеством данных.
+  # Запускается ПОСЛЕ основного обогащения, ПЕРЕД детекцией сетей.
+  # Кандидаты: нет мессенджеров, нет email, crm_score < min_crm_score.
+  # Данные сливаются с существующими (union, без перезаписи).
+  # По умолчанию выключен для тестирования.
+  reverse_lookup:
+    enabled: false          # default off for testing
+    sources:
+      dgis:
+        enabled: true
+        api_key: ""         # from .env: DGIS_API_KEY. Приоритет: config > env.
+        max_requests_per_day: 100  # бесплатный tier 2GIS: 1000/день, оставляем запас
+      yell:
+        enabled: true
+        max_requests_per_day: 50    # Yell не имеет API, запросы через Crawlee
+    min_crm_score: 30       # обогащать только компании с CRM-скором ниже порога
+    delay_between_requests: 2.0  # секунд между запросами (с jitter ±30%)
 
 # ===== Priority Score =====
 scoring:
@@ -447,7 +539,7 @@ export_presets:
   full_dump:
     description: "Все обогащённые компании"
     filters: "1=1"
-    format: "json"
+    format: "csv"
 
 # ===== Логирование =====
 logging:

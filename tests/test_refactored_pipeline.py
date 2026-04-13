@@ -1,7 +1,7 @@
 # tests/test_refactored_pipeline.py — Тесты рефакторенных модулей pipeline/
 import pytest
 from unittest.mock import MagicMock, patch, PropertyMock
-from granite.pipeline.firecrawl_client import FirecrawlClient
+from granite.pipeline.web_client import WebClient
 from granite.pipeline.region_resolver import RegionResolver
 from granite.pipeline.dedup_phase import DedupPhase
 from granite.pipeline.scoring_phase import ScoringPhase
@@ -12,77 +12,83 @@ from granite.database import Database, RawCompanyRow, CompanyRow, EnrichedCompan
 
 
 # ═══════════════════════════════════════════════════════════
-#  FirecrawlClient
+#  WebClient
 # ═══════════════════════════════════════════════════════════
 
-class TestFirecrawlClient:
-    """Тесты клиента firecrawl CLI."""
+class TestWebClient:
+    """Тесты веб-клиента."""
 
-    def test_parse_json_valid(self):
-        """Корректный JSON парсится."""
-        client = FirecrawlClient()
-        assert client._parse_json_output('{"key": "value"}') == {"key": "value"}
+    def test_custom_timeout_and_limit(self):
+        """Конфигурация timeout и search_limit."""
+        client = WebClient(timeout=120, search_limit=5)
+        assert client.timeout == 120
+        assert client.search_limit == 5
 
-    def test_parse_json_with_surrounding_text(self):
-        """JSON внутри текста извлекается через regex."""
-        client = FirecrawlClient()
-        result = client._parse_json_output('Some text\n{"data": {"web": []}}\nmore text')
-        assert result is not None
-        assert "data" in result
-
-    def test_parse_json_empty(self):
-        """Пустая строка → None."""
-        client = FirecrawlClient()
-        assert client._parse_json_output("") is None
-
-    def test_parse_json_invalid(self):
-        """Невалидный текст без JSON → None."""
-        client = FirecrawlClient()
-        assert client._parse_json_output("just plain text no json here") is None
-
-    def test_search_returns_none_on_file_not_found(self):
-        """firecrawl CLI не установлен → None."""
-        client = FirecrawlClient()
-        with patch("granite.pipeline.firecrawl_client.subprocess.run", side_effect=FileNotFoundError):
+    def test_search_returns_none_on_error(self):
+        """Ошибка сети → None."""
+        client = WebClient()
+        with patch("granite.pipeline.web_client.fetch_page", side_effect=Exception("network error")):
             result = client.search("test query")
             assert result is None
 
-    def test_search_returns_none_on_timeout(self):
-        """Таймаут subprocess → None."""
-        client = FirecrawlClient(timeout=1)
-        import subprocess
-        with patch("granite.pipeline.firecrawl_client.subprocess.run",
-                    side_effect=subprocess.TimeoutExpired(cmd="firecrawl", timeout=1)):
-            result = client.search("test query")
-            assert result is None
-
-    def test_scrape_returns_none_on_file_not_found(self):
-        """firecrawl CLI не установлен → None."""
-        client = FirecrawlClient()
-        with patch("granite.pipeline.firecrawl_client.subprocess.run", side_effect=FileNotFoundError):
+    def test_scrape_returns_none_on_error(self):
+        """Ошибка при скрапинге → None."""
+        client = WebClient()
+        with patch("granite.pipeline.web_client.fetch_page", side_effect=Exception("network error")):
             result = client.scrape("https://example.com")
             assert result is None
 
+    def test_scrape_invalid_url(self):
+        """Невалидный URL → None."""
+        client = WebClient()
+        result = client.scrape("not-a-url")
+        assert result is None
+
+    def test_scrape_ssrf_blocked(self):
+        """SSRF-защита блокирует localhost."""
+        client = WebClient()
+        result = client.scrape("http://127.0.0.1/admin")
+        assert result is None
+
     def test_scrape_extracts_phones_and_emails(self):
-        """Скрапинг возвращает телефоны и email из markdown."""
-        client = FirecrawlClient()
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = '{"data": {"markdown": "Контакт: +7 (903) 123-45-67, info@test.ru"}}'
-        mock_result.stderr = ""
-        with patch("granite.pipeline.firecrawl_client.subprocess.run", return_value=mock_result):
+        """Скрапинг возвращает телефоны и email из HTML."""
+        client = WebClient()
+        html = '''
+        <html><body>
+            <a href="tel:+79031234567">Позвонить</a>
+            <a href="mailto:info@test.ru">info@test.ru</a>
+            <p>+7 (999) 111-22-33</p>
+        </body></html>
+        '''
+        with patch("granite.pipeline.web_client.fetch_page", return_value=html):
             result = client.scrape("https://test.ru")
             assert result is not None
             assert "phones" in result
             assert "emails" in result
+            assert len(result["phones"]) > 0
             assert "info@test.ru" in result["emails"]
 
-    def test_custom_timeout_and_limit(self):
-        """Конфигурация timeout и search_limit."""
-        client = FirecrawlClient(timeout=120, search_limit=5, request_delay=3.0)
-        assert client.timeout == 120
-        assert client.search_limit == 5
-        assert client.request_delay == 3.0
+    def test_search_parses_google_results(self):
+        """Парсинг Google SERP."""
+        client = WebClient()
+        html = '''
+        <html><body>
+            <div class="g">
+                <a href="https://example.com"><h3>Example Company</h3></a>
+            </div>
+            <div class="g">
+                <a href="https://test.ru"><h3>Test Company</h3></a>
+            </div>
+        </body></html>
+        '''
+        with patch("granite.pipeline.web_client.fetch_page", return_value=html):
+            result = client.search("test query")
+            assert result is not None
+            assert "data" in result
+            web = result["data"]["web"]
+            assert len(web) == 2
+            assert web[0]["url"] == "https://example.com"
+            assert web[0]["title"] == "Example Company"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -151,13 +157,13 @@ class TestRegionResolver:
         """Только включённые источники в списке."""
         config = self._make_config(sources={
             "jsprav": {"enabled": True},
-            "firecrawl": {"enabled": True},
+            "web_search": {"enabled": True},
             "dgis": {"enabled": False},
         })
         resolver = RegionResolver(config)
-        active = resolver.get_active_sources(["jsprav", "firecrawl", "dgis"])
+        active = resolver.get_active_sources(["jsprav", "web_search", "dgis"])
         assert "jsprav" in active
-        assert "firecrawl" in active
+        assert "web_search" in active
         assert "dgis" not in active
 
     def test_get_active_sources_default_list(self):
@@ -365,35 +371,54 @@ class TestPipelineManagerInit:
         config = {"cities": [{"name": "Тест"}]}
 
         with patch("granite.pipeline.manager.CheckpointManager"), \
-             patch("granite.pipeline.manager.Classifier"), \
-             patch("granite.pipeline.manager.NetworkDetector"):
+             patch("granite.enrichers.classifier.Classifier"), \
+             patch("granite.enrichers.network_detector.NetworkDetector"):
             pm = PipelineManager(config, mock_db)
+            # Trigger lazy property access
+            _ = pm.scoring
+            _ = pm.network_detector
 
         assert hasattr(pm, 'region')
-        assert hasattr(pm, 'firecrawl')
+        assert hasattr(pm, 'web')
         assert hasattr(pm, 'scraping')
         assert hasattr(pm, 'dedup')
         assert hasattr(pm, 'enrichment')
         assert hasattr(pm, 'scoring')
         assert hasattr(pm, 'export')
         assert isinstance(pm.region, RegionResolver)
-        assert isinstance(pm.firecrawl, FirecrawlClient)
+        assert isinstance(pm.web, WebClient)
 
-    def test_firecrawl_config_from_yaml(self, tmp_path):
-        """Настройки firecrawl из конфига."""
+    def test_web_client_config_from_yaml(self, tmp_path):
+        """Настройки web_search из секции sources.web_search в конфиге."""
         mock_db = MagicMock()
         config = {
             "cities": [],
-            "firecrawl": {"timeout": 120, "search_limit": 5, "delay": 3.0},
+            "sources": {"web_search": {"timeout": 120, "search_limit": 5}},
         }
 
         with patch("granite.pipeline.manager.CheckpointManager"), \
-             patch("granite.pipeline.manager.Classifier"):
+             patch("granite.enrichers.classifier.Classifier"):
             pm = PipelineManager(config, mock_db)
+            _ = pm.scoring  # trigger lazy init
 
-        assert pm.firecrawl.timeout == 120
-        assert pm.firecrawl.search_limit == 5
-        assert pm.firecrawl.request_delay == 3.0
+        assert pm.web.timeout == 120
+        assert pm.web.search_limit == 5
+
+    def test_web_client_empty_config(self, tmp_path):
+        """Если секция web_search пустая — используются дефолтные значения."""
+        mock_db = MagicMock()
+        config = {
+            "cities": [],
+            "sources": {},
+        }
+
+        with patch("granite.pipeline.manager.CheckpointManager"), \
+             patch("granite.enrichers.classifier.Classifier"):
+            pm = PipelineManager(config, mock_db)
+            _ = pm.scoring  # trigger lazy init
+
+        assert pm.web.timeout == 60
+        assert pm.web.search_limit == 3
 
 
 # ═══════════════════════════════════════════════════════════
@@ -416,8 +441,8 @@ class TestEnrichmentPhase:
 
         mock_db.session_scope = fake_scope
 
-        mock_fc = MagicMock()
-        phase = EnrichmentPhase({}, mock_db, mock_fc)
+        mock_web = MagicMock()
+        phase = EnrichmentPhase({}, mock_db, mock_web)
 
         # Должно пройти без ошибок (пропустить компанию)
         result = phase._run_deep_enrich_for(
@@ -430,11 +455,11 @@ class TestEnrichmentPhase:
         """Источник по умолчанию включён."""
         mock_db = MagicMock()
         phase = EnrichmentPhase({}, mock_db, MagicMock())
-        assert phase._is_enabled("firecrawl") is True
+        assert phase._resolver.is_source_enabled("web_search") is True
 
     def test_is_enabled_explicit_false(self):
         """Источник явно отключён."""
-        config = {"sources": {"firecrawl": {"enabled": False}}}
+        config = {"sources": {"web_search": {"enabled": False}}}
         mock_db = MagicMock()
         phase = EnrichmentPhase(config, mock_db, MagicMock())
-        assert phase._is_enabled("firecrawl") is False
+        assert phase._resolver.is_source_enabled("web_search") is False

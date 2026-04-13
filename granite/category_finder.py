@@ -1,14 +1,25 @@
 # category_finder.py — поиск поддоменов jsprav через API
 # POST /api/cities/ с JSON {"q":"Город"} → [{name, region, url}]
 import yaml
-import json
 import re
 import threading
+import time
 import requests
 from pathlib import Path
 from loguru import logger
+from granite.utils import is_safe_url
 
-CACHE_PATH = "data/category_cache.yaml"
+__all__ = [
+    "CACHE_PATH",
+    "DEFAULT_HEADERS",
+    "JSPRAV_CATEGORY",
+    "find_jsprav",
+    "discover_categories",
+    "get_categories",
+    "get_subdomain",
+]
+
+CACHE_PATH = str(Path(__file__).parent.parent / "data" / "category_cache.yaml")
 
 DEFAULT_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -19,21 +30,40 @@ JSPRAV_CATEGORY = "izgotovlenie-i-ustanovka-pamyatnikov-i-nadgrobij"
 _jsprav_local = threading.local()
 
 
-def _get_jsprav_session() -> requests.Session:
-    """Создать сессию с CSRF-токеном для jsprav.ru (thread-safe)."""
+def _get_jsprav_session() -> requests.Session | None:
+    """Создать сессию с CSRF-токеном для jsprav.ru (thread-safe).
+
+    При таймаутах делает до 3 повторных попыток с паузой 5 сек.
+    Возвращает None если все попытки провалились.
+    """
     if not hasattr(_jsprav_local, "session") or _jsprav_local.session is None:
         session = requests.Session()
         session.headers.update(DEFAULT_HEADERS)
 
         # Получаем главную — там CSRF-токен в JS и cookie
-        r = session.get("https://jsprav.ru/", timeout=20)
-        if r.status_code == 200:
-            m = re.search(r'window\["csrf_token"\]\s*=\s*"([^"]+)"', r.text)
-            if m:
-                session.headers["X-CSRFToken"] = m.group(1)
-                logger.info(f"  jsprav.ru: CSRF получен")
-        else:
-            logger.warning("  jsprav.ru: главная недоступна")
+        # Ретраи при таймаутах
+        for attempt in range(3):
+            try:
+                r = session.get("https://jsprav.ru/", timeout=20)
+                if r.status_code == 200:
+                    m = re.search(r'window\["csrf_token"\]\s*=\s*"([^"]+)"', r.text)
+                    if m:
+                        session.headers["X-CSRFToken"] = m.group(1)
+                        logger.info("  jsprav.ru: CSRF получен")
+                else:
+                    logger.warning("  jsprav.ru: главная недоступна")
+                break
+            except (requests.Timeout, requests.ConnectionError) as e:
+                logger.warning(
+                    f"  jsprav.ru: попытка {attempt + 1}/3 — {e}"
+                )
+                if attempt < 2:
+                    time.sleep(5)
+                else:
+                    logger.error(
+                        "  jsprav.ru: все 3 попытки провалились, сессия не создана"
+                    )
+                    return None
 
         _jsprav_local.session = session
     return _jsprav_local.session
@@ -46,6 +76,9 @@ def _search_city(city: str) -> dict | None:
     или None.
     """
     session = _get_jsprav_session()
+    if session is None:
+        logger.warning(f"    jsprav API: сессия недоступна, пропуск {city}")
+        return None
     try:
         r = session.post(
             "https://jsprav.ru/api/cities/",
@@ -74,9 +107,9 @@ def _search_city(city: str) -> dict | None:
             # Проверяем минимум 6 общих символов или начало
             if city_lower[:6] == first_name_lower[:6]:
                 return first
-        elif city_lower.startswith(first_name_lower) or first_name_lower.startswith(
+        elif len(first_name_lower) >= 3 and (city_lower.startswith(first_name_lower) or first_name_lower.startswith(
             city_lower
-        ):
+        )):
             return first
 
         return None
@@ -87,17 +120,21 @@ def _search_city(city: str) -> dict | None:
 
 def _extract_subdomain(url: str) -> str:
     """http://kamyishin.jsprav.ru → kamyishin"""
-    m = re.search(r"https?://([a-z0-9-]+)\.jsprav\.ru", url)
+    m = re.search(r"https?://([a-z0-9-]+)\.jsprav\.ru", url, re.IGNORECASE)
     return m.group(1) if m else ""
 
 
 def _check_head(url: str, timeout: int = 8) -> bool:
+    if not is_safe_url(url):
+        logger.warning(f"_check_head: skipping unsafe URL '{url}'")
+        return False
     try:
         r = requests.head(
             url, timeout=timeout, headers=DEFAULT_HEADERS, allow_redirects=True
         )
         return r.status_code == 200
-    except Exception:
+    except Exception as e:
+        logger.debug(f"_check_head failed for '{url}': {e}")
         return False
 
 
@@ -146,34 +183,43 @@ def _save_cache(cache: dict):
         yaml.dump(cache, f, allow_unicode=True, default_flow_style=False)
 
 
+_cache_lock = threading.Lock()
+
+
 def discover_categories(cities: list[str], config: dict) -> dict:
     """Поиск поддоменов и категорий для городов области."""
-    cache = _load_cache()
-    found_any = False
+    with _cache_lock:
+        cache = _load_cache()
+        found_any = False
 
-    for city in cities:
-        logger.info(f"  Поиск категорий: {city}")
+        for city in cities:
+            logger.info(f"  Поиск категорий: {city}")
 
-        cached = cache.get("jsprav", {}).get(city, [])
-        if cached:
-            logger.info(f"    jsprav {city}: из кэша — {cached}")
-            continue
+            cached = cache.get("jsprav", {}).get(city, [])
+            if cached:
+                logger.info(f"    jsprav {city}: из кэша — {cached}")
+                continue
 
-        result = find_jsprav(city, config)
-        if result.get("categories"):
-            cache.setdefault("jsprav", {})[city] = result["categories"]
-            cache.setdefault("_subdomains", {}).setdefault("jsprav", {})[city] = result[
-                "subdomain"
-            ]
-            found_any = True
+            try:
+                result = find_jsprav(city, config)
+            except Exception as e:
+                logger.warning(f"  Пропуск {city}: jsprav недоступен — {e}")
+                continue
 
-    if found_any:
-        _save_cache(cache)
-        logger.info(f"Кэш категорий обновлён: {CACHE_PATH}")
-    else:
-        logger.info("Кэш категорий не изменён")
+            if result.get("categories"):
+                cache.setdefault("jsprav", {})[city] = result["categories"]
+                cache.setdefault("_subdomains", {}).setdefault("jsprav", {})[city] = result[
+                    "subdomain"
+                ]
+                found_any = True
 
-    return cache
+        if found_any:
+            _save_cache(cache)
+            logger.info(f"Кэш категорий обновлён: {CACHE_PATH}")
+        else:
+            logger.info("Кэш категорий не изменён")
+
+        return cache
 
 
 def get_categories(
@@ -184,7 +230,7 @@ def get_categories(
 
 
 def get_subdomain(
-    cache: dict, source: str, city: str, config: dict = None
+    cache: dict, source: str, city: str, config: dict | None = None
 ) -> str | None:
     subdomain = cache.get("_subdomains", {}).get(source, {}).get(city)
     if subdomain:

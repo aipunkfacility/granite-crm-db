@@ -42,22 +42,6 @@ def upgrade() -> None:
         batch_op.create_index(batch_op.f('ix_companies_city'), ['city'], unique=False)
         batch_op.create_index(batch_op.f('ix_companies_status'), ['status'], unique=False)
 
-    op.create_table('pipeline_runs',
-    sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
-    sa.Column('city', sa.String(), nullable=False),
-    sa.Column('stage', sa.String(), nullable=False),
-    sa.Column('source', sa.String(), nullable=True),
-    sa.Column('started_at', sa.DateTime(), nullable=True),
-    sa.Column('finished_at', sa.DateTime(), nullable=True),
-    sa.Column('records_found', sa.Integer(), nullable=True),
-    sa.Column('records_errors', sa.Integer(), nullable=True),
-    sa.Column('status', sa.String(), nullable=True),
-    sa.Column('error_message', sa.Text(), nullable=True),
-    sa.PrimaryKeyConstraint('id')
-    )
-    with op.batch_alter_table('pipeline_runs', schema=None) as batch_op:
-        batch_op.create_index(batch_op.f('ix_pipeline_runs_city'), ['city'], unique=False)
-
     op.create_table('enriched_companies',
     sa.Column('id', sa.Integer(), nullable=False),
     sa.Column('name', sa.String(), nullable=False),
@@ -119,10 +103,6 @@ def downgrade() -> None:
         batch_op.drop_index(batch_op.f('ix_enriched_companies_city'))
 
     op.drop_table('enriched_companies')
-    with op.batch_alter_table('pipeline_runs', schema=None) as batch_op:
-        batch_op.drop_index(batch_op.f('ix_pipeline_runs_city'))
-
-    op.drop_table('pipeline_runs')
     with op.batch_alter_table('companies', schema=None) as batch_op:
         batch_op.drop_index(batch_op.f('ix_companies_status'))
         batch_op.drop_index(batch_op.f('ix_companies_city'))

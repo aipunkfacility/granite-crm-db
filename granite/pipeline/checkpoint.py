@@ -1,5 +1,5 @@
 # pipeline/checkpoint.py
-from granite.database import Database, EnrichedCompanyRow
+from granite.database import Database, EnrichedCompanyRow, RawCompanyRow, CompanyRow
 from loguru import logger
 
 
@@ -16,8 +16,6 @@ class CheckpointManager:
         Возможные стадии: 'start', 'scraped', 'deduped', 'enriched'
         """
         with self.db.session_scope() as session:
-            from granite.database import RawCompanyRow, CompanyRow
-
             enriched_count = (
                 session.query(EnrichedCompanyRow).filter_by(city=city).count()
             )
@@ -37,10 +35,7 @@ class CheckpointManager:
     def clear_city(self, city: str):
         """Полная очистка всех данных по городу (при --force)."""
         with self.db.session_scope() as session:
-            from granite.database import RawCompanyRow, CompanyRow
-
             session.query(EnrichedCompanyRow).filter_by(city=city).delete()
-            session.query(CompanyRow).filter_by(city=city).delete()
             session.query(RawCompanyRow).filter_by(city=city).delete()
-            session.commit()
+            session.query(CompanyRow).filter_by(city=city).delete()
             logger.info(f"Очищены все данные для города {city}")

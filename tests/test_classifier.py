@@ -51,8 +51,8 @@ def test_classifier_max_score(classifier):
     }
     
     score = classifier.calculate_score(company)
-    # 10(web) + 15(bitrix) + 5(marquiz) + 15(tg) + 15(tg_trust) + 10(wa) + 5(2_phones) + 5(email) + 15(network) = 90
-    assert score == 95 # 10+15+5+15+15+10+5+5+15 = 95
+    # 10(web) + 15(bitrix) + 5(marquiz) + 15(tg) + 15(tg_trust) + 10(wa) + 5(2_phones) + 5(email) + 15(network) = 95
+    assert score == 95
     segment = classifier.determine_segment(score)
     assert segment == "A"
 
@@ -69,3 +69,11 @@ def test_classifier_segment_B(classifier):
     assert score == 25
     segment = classifier.determine_segment(score)
     assert segment == "C" # 25 is >= 20 -> C
+
+
+def test_classifier_flexbe_gets_modern_cms_bonus(classifier):
+    """Flexbe is classified as a modern CMS (same as WordPress/Tilda)."""
+    company = {"website": "http://site.ru", "cms": "flexbe"}
+    score = classifier.calculate_score(company)
+    # 10 (has_website) + 10 (cms_modern) = 20
+    assert score == 20

@@ -33,8 +33,11 @@ class Classifier:
         if messengers.get("telegram"):
             score += self.weights.get("has_telegram", 0)
             
-            tg_trust = company.get("tg_trust", {})
-            score += (tg_trust.get("trust_score", 0) * self.weights.get("tg_trust_multiplier", 0))
+            tg_trust = company.get("tg_trust") or {}
+            try:
+                score += int(tg_trust.get("trust_score", 0) * self.weights.get("tg_trust_multiplier", 0))
+            except (TypeError, ValueError):
+                pass
             
         if messengers.get("whatsapp"):
             score += self.weights.get("has_whatsapp", 0)
@@ -57,11 +60,11 @@ class Classifier:
 
     def determine_segment(self, score: int) -> str:
         """Определение сегмента на основе Score."""
-        if score >= self.thresholds.get("segment_A", 60):
+        if score >= self.thresholds.get("segment_A", 50):
             return "A"
-        elif score >= self.thresholds.get("segment_B", 40):
+        elif score >= self.thresholds.get("segment_B", 30):
             return "B"
-        elif score >= self.thresholds.get("segment_C", 20):
+        elif score >= self.thresholds.get("segment_C", 15):
             return "C"
         else:
             return "D"
