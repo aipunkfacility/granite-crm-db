@@ -221,13 +221,13 @@ class SiteNotFoundError(Exception):
 
 
 # Retry для временных ошибок (502, 503, timeout, connection)
-# НЕ retry для 404 и 403 (заблокировали)
+# НЕ retry для 404, 403 и 429 (заблокировали / rate limit)
 def _should_retry(exc: BaseException) -> bool:
     if isinstance(exc, SiteNotFoundError):
         return False
     if isinstance(exc, requests.exceptions.HTTPError):
         response = exc.response
-        if response is not None and response.status_code in (403, 404):
+        if response is not None and response.status_code in (403, 404, 429):
             return False
     return True
 

@@ -193,7 +193,7 @@ class YellScraper(BaseScraper):
         return companies
 
     async def _extract_companies(
-        self, page, seen_names: set[str]
+        self, page, seen_names: set[str], start_url: str
     ) -> list[RawCompany]:
         """Извлечь карточки компаний со страницы Yell.
 

@@ -871,6 +871,7 @@ class TestYellExtractCompanies:
         mock_card.query_selector_all = AsyncMock(return_value=[mock_link])
 
         mock_card.inner_html = AsyncMock(return_value=html)
+        mock_card.evaluate = AsyncMock(return_value=None)
 
         return mock_card
 
@@ -889,7 +890,7 @@ class TestYellExtractCompanies:
         mock_page.query_selector_all = AsyncMock(return_value=[mock_card1, mock_card2])
 
         seen = set()
-        companies = await scraper._extract_companies(mock_page, seen)
+        companies = await scraper._extract_companies(mock_page, seen, "https://test.com")
 
         assert len(companies) == 2
         assert companies[0].name == "Гранит Мастер"
@@ -910,7 +911,7 @@ class TestYellExtractCompanies:
         mock_page.query_selector_all = AsyncMock(return_value=[mock_card, mock_card])
 
         seen = set()
-        companies = await scraper._extract_companies(mock_page, seen)
+        companies = await scraper._extract_companies(mock_page, seen, "https://test.com")
 
         assert len(companies) == 1
 
@@ -931,7 +932,7 @@ class TestYellExtractCompanies:
         mock_page.query_selector_all = AsyncMock(return_value=[mock_card])
 
         seen = set()
-        companies = await scraper._extract_companies(mock_page, seen)
+        companies = await scraper._extract_companies(mock_page, seen, "https://test.com")
 
         assert len(companies) == 0
 
@@ -950,6 +951,6 @@ class TestYellExtractCompanies:
         mock_page.query_selector_all = AsyncMock(return_value=[mock_card])
 
         seen = set()
-        companies = await scraper._extract_companies(mock_page, seen)
+        companies = await scraper._extract_companies(mock_page, seen, "https://test.com")
 
         assert len(companies) == 0

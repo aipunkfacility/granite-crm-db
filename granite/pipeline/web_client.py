@@ -24,6 +24,10 @@ class WebClient:
     rate limiting Google SERP. scrape() — без блокировки (разные домены).
     """
 
+    # Adaptive backoff при Google 429
+    _SEARCH_DELAY_MIN = 2.0
+    _SEARCH_DELAY_MAX = 120.0
+
     def __init__(
         self, timeout: int = 60, search_limit: int = 3,
         search_delay: float = 2.0,
@@ -36,11 +40,11 @@ class WebClient:
         self._last_search_time = 0.0
 
     def search(self, query: str) -> dict | None:
-        """Поиск через Google SERP (с rate limiting).
+        """Поиск через Google SERP (с adaptive rate limiting).
 
         Сериализован через Lock: при параллельном обогащении (ThreadPoolExecutor)
         Google-запросы выполняются последовательно с задержкой search_delay
-        между ними. Это предотвращает HTTP 429 / CAPTCHA от Google.
+        между ними. При HTTP 429 задержка удваивается (до 120 сек).
 
         Returns:
             dict с ключом "data.web" — список результатов, или None.
@@ -57,6 +61,9 @@ class WebClient:
             try:
                 search_url = f"https://www.google.com/search?q={quote_plus(query)}&num={self.search_limit}&hl=ru"
                 html = fetch_page(search_url, timeout=15)
+
+                # Google OK — сбрасываем задержку к базовому значению
+                self._on_search_success()
 
                 if not html:
                     return None
@@ -91,8 +98,22 @@ class WebClient:
                 return None
 
             except Exception as e:
+                err_str = str(e)
+                if "429" in err_str:
+                    self._on_search_429()
                 logger.debug(f"WebClient search ошибка: {e}")
                 return None
+
+    def _on_search_success(self) -> None:
+        """Сброс задержки к базовому значению при успешном запросе."""
+        self.search_delay = self._SEARCH_DELAY_MIN
+
+    def _on_search_429(self) -> None:
+        """Удвоить задержку при 429 (adaptive backoff)."""
+        self.search_delay = min(self.search_delay * 2, self._SEARCH_DELAY_MAX)
+        logger.warning(
+            f"Google 429 — задержка увеличена до {self.search_delay:.0f} сек"
+        )
 
     def scrape(self, url: str) -> dict | None:
         """Скрапинг сайта через requests + BeautifulSoup.
@@ -150,7 +171,7 @@ class WebClient:
     async def search_async(self, query: str) -> dict | None:
         """Async версия search — использует httpx.AsyncClient.
 
-        Rate limiting через asyncio.Lock вместо threading.Lock.
+        Rate limiting через asyncio.Lock + adaptive backoff при 429.
         """
         async with self._async_search_lock:
             # Rate limiting: минимальная задержка между Google-запросами
@@ -167,6 +188,9 @@ class WebClient:
                     f"&num={self.search_limit}&hl=ru"
                 )
                 html = await async_fetch_page(search_url, timeout=15)
+
+                # Google OK — сбрасываем задержку
+                self._on_search_success()
 
                 if not html:
                     return None
@@ -202,6 +226,9 @@ class WebClient:
                 return None
 
             except Exception as e:
+                err_str = str(e)
+                if "429" in err_str:
+                    self._on_search_429()
                 logger.debug(f"WebClient search_async ошибка: {e}")
                 return None
 
